@@ -123,7 +123,8 @@ judge-me-bro/
 │   ├── root.md                  ← this file
 │   ├── persona-schema.md        ← (sub-spec) frontmatter contract
 │   ├── reputation.md            ← (sub-spec) scoring math
-│   └── hosting.md               ← (sub-spec) deploy / upload API
+│   ├── hosting.md               ← (sub-spec) deploy / upload API
+│   └── valiron-reputation-layer.md ← (sub-spec) Valiron as the trust/rep layer
 ├── agents/                      ← subagent definitions (agent.md files)
 │   ├── distiller.md             ← turns scraped material → persona md
 │   ├── manifestor.md            ← turns persona md → runnable judge
