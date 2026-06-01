@@ -112,6 +112,7 @@
    Shape per row matches ReputationSnapshot (specs/root.md §6.5), plus a
    display `name` and an optional `prev_rep_score` for the version-delta badge.
    ───────────────────────────────────────────────────────────────────────── */
+/* DATA:START */
 const DATA = {
   run_id: "2026-06-01T18-00Z",
   evaluator_version: "eval@v1",
@@ -143,6 +144,7 @@ const DATA = {
     }
   ]
 };
+/* DATA:END */
 
 const medals = ["🥇", "🥈", "🥉"];
 const pct = (v) => Math.max(0, Math.min(100, (v / 10) * 100)) + "%";
