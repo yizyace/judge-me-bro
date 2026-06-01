@@ -5,13 +5,46 @@
 > **Valiron** (sponsor API) reads that on-chain reputation and gates which judges
 > are trusted enough to sit on the panel.
 
-- **Status:** Draft — approved direction (on-chain Solana, "thin" scope), ready to implement
+- **Status:** Design ready — **parked**: implementation is sequenced *after* the
+  local leaderboard / reputation system lands (see *Sequencing & status* below).
 - **Owner:** Ace
 - **Last updated:** 2026-06-01
-- **Parent spec:** [`root.md`](./root.md) — read it first for the full app.
-- **Related sub-specs:** [`reputation.md`](./reputation.md) (the scoring math this
-  feeds), [`hosting.md`](./hosting.md) (the `store/` seam this plugs into).
+- **Parent spec:** [`root.md`](./root.md) — read it first for the full app; the
+  `store/` seam this plugs into is **root.md §10 (Storage & hosting)**.
+- **Related sub-specs:** [`reputation.md`](./reputation.md) (Phase-3 math + ledger
+  this feeds), [`judging-schemas.md`](./judging-schemas.md) (`MetaEvaluation`
+  contract consumed), [`valiron-setup.md`](./valiron-setup.md) (credentials runbook).
 - **Sponsor:** Valiron — <https://www.valiron.co/docs> · `@valiron/sdk` v1.0.2
+
+---
+
+## Sequencing & status (read first)
+
+**This spec is parked, not yet implementable.** It is **blocked on the local
+leaderboard / reputation system** — [`reputation.md`](./reputation.md) (Phase-3
+aggregation → `reputation#ReputationSnapshot` + the append-only ledger), the
+`report/` output, and the `store/` interface (root.md §10) + `reputation-keeper`.
+This Valiron layer is an *alternative / augmenting backend* behind the **same
+`store/` seam** (`append_reputation` / `query_reputation`) and consumes the same
+contracts (`judging-schemas#MetaEvaluation`, `reputation#ReputationSnapshot`).
+
+**Do not start implementation until that system has landed and the `store/`
+interface + reputation record are stable.** When it has:
+
+1. Implement against the finalized `store/` interface as `store/solana-rep` (write)
+   + `store/valiron` (read) — §4.
+2. Map the local per-meta-eval score (`reputation#RepComponents`) → the **0–100
+   on-chain feedback value** written in Phase 2 — §6.
+3. Reuse credentials per [`valiron-setup.md`](./valiron-setup.md): operator key via
+   `VALIRON_API_KEY` for Valiron reads/gate; add the **Solana rater keypair** under
+   the already-gitignored `data/.solana/`.
+
+> ⚠️ **Reconciliation needed:** [`valiron-setup.md`](./valiron-setup.md) was written
+> against this spec's *earlier* Web2 / key-based framing (EIP-191 identities under
+> `data/.valiron/`, a "feedback-write for key-based agents"). Under this verified
+> design the identities are **Solana keypairs** and the feedback write goes to the
+> **ERC-8004 Solana program directly** (not a Valiron SDK call). That runbook needs
+> a short Solana addendum when this is picked up — flagged here, not yet applied.
 
 ---
 
@@ -149,9 +182,13 @@ new agent → fresh on-chain reputation**, which is what makes "did the new vers
 judge better?" an honest, verifiable comparison (and is the demo's spine).
 
 ### 5.2 Key material (security — do not get this wrong)
-- Solana keypairs are secrets. Store under **gitignored** `data/.solana/`. Never
-  write a private key into a persona file or anything tracked. (`git status` must
-  stay clean.)
+- Solana keypairs are secrets. Store under **gitignored** `data/.solana/` (already
+  covered by the repo's existing `data/` ignore — see [`valiron-setup.md`](./valiron-setup.md)
+  §4). Never write a private key into a persona file or anything tracked
+  (`git status` must stay clean).
+- The **operator** key (`VALIRON_API_KEY` in `.env`) used for Valiron reads/gate is
+  a *separate* secret managed per [`valiron-setup.md`](./valiron-setup.md) §2 — do
+  not conflate it with the per-agent Solana keypair.
 - Frontmatter holds only the **public** `solana_agent_id`.
 - `VALIRON_KEYSTORE_DIR` env override lets hosting inject keys from a secret
   manager later without code changes.
@@ -302,5 +339,7 @@ changes the interface — only the identity/keypair management in `store/solana-
 - `@valiron/sdk` README mirror — <https://unpkg.com/@valiron/sdk/README.md>
 - ERC-8004 on Solana — QuantuLabs `8004-solana` (Metaplex Core assets)
 - `@solana/web3.js` — Solana client for registration + feedback writes
+- Credentials runbook — [`valiron-setup.md`](./valiron-setup.md) · `MetaEvaluation`
+  contract — [`judging-schemas.md`](./judging-schemas.md)
 - Parent: [`root.md`](./root.md) · math: [`reputation.md`](./reputation.md) ·
-  seam: [`hosting.md`](./hosting.md)
+  `store/` seam: **root.md §10 (Storage & hosting)**
