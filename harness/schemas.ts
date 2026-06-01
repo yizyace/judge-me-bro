@@ -201,3 +201,39 @@ export const ReputationReport = z.object({
   snapshots: z.array(ReputationSnapshot),
 });
 export type ReputationReport = z.infer<typeof ReputationReport>;
+
+/* ── Panel summary view (one consolidated review per run × idea) ─────────── */
+
+/** Per-verdict tallies across the panel's Phase-1 evaluations. */
+export const VerdictCounts = z.object({
+  advance: z.number().int().nonnegative(),
+  borderline: z.number().int().nonnegative(),
+  pass: z.number().int().nonnegative(),
+});
+export type VerdictCounts = z.infer<typeof VerdictCounts>;
+
+/** Per-axis mean scores (1–10, not necessarily integral once averaged). */
+export const MeanScores = criterionRecord(z.number().min(1).max(10));
+export type MeanScores = z.infer<typeof MeanScores>;
+
+/**
+ * A deterministic panel-level synthesis of all of a run's Phase-1 evaluations
+ * for ONE idea into a single consolidated review. Built by
+ * `computeIdeaReviewSummary` (harness/summary.ts) — no LLM. `consensus_verdict`
+ * is the majority verdict, tie-broken by `mean_weighted_total`; the `narrative`
+ * is templated from the aggregates.
+ */
+export const IdeaReviewSummary = z.object({
+  run_id: RunId,
+  idea_id: Slug,
+  n_judges: z.number().int().nonnegative(),
+  verdict_counts: VerdictCounts,
+  consensus_verdict: z.enum(VERDICTS),
+  mean_weighted_total: z.number().min(1).max(10),
+  mean_scores: MeanScores,
+  top_strengths: z.array(z.string()).max(5),
+  top_risks: z.array(z.string()).max(5),
+  key_questions: z.array(z.string()),
+  narrative: z.string().min(1),
+});
+export type IdeaReviewSummary = z.infer<typeof IdeaReviewSummary>;

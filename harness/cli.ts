@@ -9,6 +9,7 @@ import { validateIdeaOutput, persistIdeaEvaluation } from "./eval.js";
 import { validateMetaOutput, persistMetaEvaluation } from "./meta.js";
 import { aggregateRun } from "./reputation.js";
 import { buildReport, renderReportMarkdown, writeReport } from "./report.js";
+import { computeIdeaReviewSummary } from "./summary.js";
 
 /**
  * judge-me-bro harness CLI — deterministic plumbing only (NO LLM calls).
@@ -46,6 +47,30 @@ function req(flags: Record<string, string>, name: string): string {
   const v = flags[name];
   if (v === undefined) fail(`missing required --${name}`);
   return v;
+}
+
+/** Split a comma-separated flag value into trimmed, non-empty ids. */
+function csv(v: string | undefined): string[] {
+  if (v === undefined) return [];
+  return v
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Intersect available items with a requested id subset (fail-closed). With no
+ * requested ids the full list passes through (current behavior). Any requested
+ * id that matches nothing aborts with `unknown <label> id(s): …` and a non-zero
+ * exit, so a scoped run never silently drops a typo'd judge/idea.
+ */
+function selectSubset<T>(items: T[], idOf: (item: T) => string, requested: string[], label: string): T[] {
+  if (requested.length === 0) return items;
+  const available = new Set(items.map(idOf));
+  const missing = requested.filter((id) => !available.has(id));
+  if (missing.length > 0) fail(`unknown ${label} id(s): ${missing.join(", ")}`);
+  const want = new Set(requested);
+  return items.filter((item) => want.has(idOf(item)));
 }
 
 function asKind(v: string): Kind {
@@ -160,11 +185,48 @@ try {
       break;
     }
 
+    case "report:json": {
+      const report = buildReport(store, req(flags, "run"), flags["evaluator"] ?? DEFAULT_EVALUATOR_VERSION);
+      const json = JSON.stringify(report, null, 2) + "\n";
+      const rel = store.writeRunFile(report.run_id, "report.json", json);
+      // Keep stdout clean by default (path -> stderr); --stdout emits the JSON.
+      if (flags["stdout"] === "true") process.stdout.write(json);
+      console.error(`wrote ${rel}`);
+      break;
+    }
+
+    case "summary:json": {
+      const runId = req(flags, "run");
+      // Read the run's Phase-1 evaluations (parsed + validated by the Store).
+      const evals = store.readEvaluations(runId);
+      if (evals.length === 0) fail(`no evaluations found for run ${runId} (runs/${runId}/evaluations/)`);
+      // Single-idea panel summary: derive the idea from the evaluations.
+      const ideaId = evals[0]!.idea_id;
+      const summary = computeIdeaReviewSummary(runId, ideaId, evals);
+      const json = JSON.stringify(summary, null, 2) + "\n";
+      const rel = store.writeRunFile(runId, "summary.json", json);
+      // Keep stdout clean by default (path -> stderr); --stdout emits the JSON.
+      if (flags["stdout"] === "true") process.stdout.write(json);
+      console.error(`wrote ${rel}`);
+      break;
+    }
+
     case "run:init": {
       const evaluator = flags["evaluator"] ?? DEFAULT_EVALUATOR_VERSION;
       const runId = flags["run"] ?? genRunId();
+      // Optional subset filters (--judges a,b / --idea x / --ideas x,y). Absent
+      // flags keep the full panel; unknown ids fail-closed (see selectSubset).
+      const wantJudges = csv(flags["judges"]);
+      const wantIdeas = [...csv(flags["idea"]), ...csv(flags["ideas"])];
+      const activeJudges = selectSubset(
+        store.activeJudges(),
+        (p) => p.frontmatter.id,
+        wantJudges,
+        "judge",
+      );
+      const activeIdeas = selectSubset(store.listIdeas(), (i) => i.frontmatter.id, wantIdeas, "idea");
       store.upsertEvaluator(evaluator, JSON.stringify({ evaluator }), "judge-me-bro baseline evaluator");
-      const judges = store.activeJudges().map((p) => {
+      const judges = activeJudges.map((p) => {
         store.registerJudgeVersion(p.frontmatter, p.path);
         return {
           judge_id: p.frontmatter.id,
@@ -174,7 +236,7 @@ try {
           persona_path: p.path,
         };
       });
-      const ideas = store.listIdeas().map((i) => ({
+      const ideas = activeIdeas.map((i) => ({
         id: i.frontmatter.id,
         path: i.path,
         title: i.frontmatter.title,
@@ -189,7 +251,7 @@ try {
       const usage =
         "judge-me-bro harness — usage: tsx harness/cli.ts <subcommand> [flags]\n" +
         "subcommands: persona:validate persona:put eval:validate eval:persist " +
-        "meta:validate meta:persist reputation report run:init";
+        "meta:validate meta:persist reputation report report:json summary:json run:init";
       console.log(usage);
       process.exit(cmd ? 2 : 1);
     }
