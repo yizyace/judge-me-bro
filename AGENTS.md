@@ -53,4 +53,14 @@ version-over-version reputation comparisons break.
 - **Commits & PRs.** Atomic + Conventional Commits per `CONSTITUTION.md`; open
   PRs against `main`.
 
+### Valiron (agent trust & payments)
+
+This repo ships the **[Valiron](https://www.valiron.co)** integration skill at
+[`.claude/skills/valiron/SKILL.md`](./.claude/skills/valiron/SKILL.md) — context for
+gating, scoring, and sandboxing AI agents before they reach an API (SDK setup, Express
+middleware, trust tiers, multi-chain support). Installed via `npx @valiron/skill`.
+
+- **Agents dashboard:** <https://www.valiron.co/dashboard/agents>
+- **Docs:** <https://www.valiron.co/docs>
+
 <!-- dd-dm:custom:end -->
