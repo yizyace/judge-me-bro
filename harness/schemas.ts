@@ -31,6 +31,16 @@ export const EvaluatorVersion = z.string().regex(/^eval@v\d+$/, "must look like 
 export const IsoTimestamp = z.string().datetime({ offset: true });
 export const RunId = z.string().min(1);
 export const Kind = z.enum(KINDS);
+export type Kind = (typeof KINDS)[number];
+
+/**
+ * A date field tolerant of YAML auto-dating: `distilled_at: 2026-06-01` is
+ * parsed to a JS Date by js-yaml, so coerce Dates back to an ISO string.
+ */
+export const FlexibleDateString = z.preprocess(
+  (v) => (v instanceof Date ? v.toISOString() : v),
+  z.string().min(1),
+);
 
 /** Build a strict object keyed by exactly the five rubric criteria. */
 const criterionRecord = <T extends z.ZodTypeAny>(value: T) =>
@@ -120,7 +130,7 @@ export const PersonaFrontmatter = z.object({
   /** Optional display name for reports; falls back to a title-cased id. */
   name: z.string().min(1).optional(),
   source_urls: z.array(z.string().url()),
-  distilled_at: z.string().min(1), // date (2026-06-01) or ISO timestamp
+  distilled_at: FlexibleDateString, // date (2026-06-01) or ISO timestamp
   distilled_by: z.string().min(1), // e.g. distiller@v1
   domains: z.array(z.string()),
   values: z.array(z.string()),
