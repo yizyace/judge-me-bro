@@ -53,4 +53,30 @@ version-over-version reputation comparisons break.
 - **Commits & PRs.** Atomic + Conventional Commits per `CONSTITUTION.md`; open
   PRs against `main`.
 
+### Valiron (agent trust & payments)
+
+This repo ships the **[Valiron](https://www.valiron.co)** integration skill at
+[`.claude/skills/valiron/SKILL.md`](./.claude/skills/valiron/SKILL.md) — context for
+gating, scoring, and sandboxing AI agents before they reach an API (SDK setup, Express
+middleware, trust tiers, multi-chain support). Installed via `npx @valiron/skill`.
+
+- **Agents dashboard:** <https://www.valiron.co/dashboard/agents>
+- **Docs:** <https://www.valiron.co/docs>
+- **Setup runbook:** [`specs/valiron-setup.md`](./specs/valiron-setup.md) — credentials + SDK wiring; **read this first** when building the reputation feature.
+
+**Credentials — set `VALIRON_API_KEY` in a local `.env`.** Read-only calls
+(`checkAgent`, `getAgentProfile`, `gate`) need no key; **write / operator** calls
+need the operator API key (`val_op_…`, from the
+[dashboard](https://www.valiron.co/dashboard)), passed as
+`new ValironSDK({ apiKey: process.env.VALIRON_API_KEY })`. Keep it in a gitignored
+`.env` — never hardcode or commit it.
+
+> **If `VALIRON_API_KEY` is required but missing** (not in the environment, no
+> `.env`), **stop and ask the user to create a `.env`** containing
+> `VALIRON_API_KEY=val_op_…` — do not fabricate, hardcode, or commit a key, and do
+> not silently skip the call. The key-based **agent-identity** private keys are a
+> *separate* secret (see
+> [`specs/valiron-reputation-layer.md`](./specs/valiron-reputation-layer.md) §5.2)
+> and live under the gitignored `data/.valiron/`; never commit those either.
+
 <!-- dd-dm:custom:end -->
