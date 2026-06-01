@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Design tokens — ported verbatim from the original report/leaderboard.html
+   prototype (feat/judging-mvp), via feat/ui-report's index.css. Tailwind v4 is
+   CSS-first: tokens declared here generate utilities (bg-panel, text-muted,
+   border-line, …) automatically.
+   ─────────────────────────────────────────────────────────────────────────── */
+@theme {
+  --color-bg: #0b0d12;
+  --color-panel: #151922;
+  --color-panel-2: #1c2230;
+  --color-line: #2a3242;
+  --color-text: #e7ecf3;
+  --color-muted: #93a0b4;
+  --color-accent: #6ea8fe;
+  --color-good: #4ade80;
+  --color-warn: #fbbf24;
+  --color-bad: #f87171;
+  --color-bar-bg: #232b3a;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@layer base {
+  body {
+    min-height: 100vh;
+    background: radial-gradient(1200px 600px at 70% -10%, #16203a 0%, var(--color-bg) 55%);
+    background-attachment: fixed;
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Gradient fills that aren't expressible as plain utilities — kept exact. */
+@utility board-top {
+  background-image: linear-gradient(180deg, #18243c, var(--color-panel));
+}
+@utility fill-good {
+  background-image: linear-gradient(90deg, #2f6f4f, var(--color-good));
+}
+@utility fill-bias {
+  background-image: linear-gradient(90deg, #7a3b3b, var(--color-bad));
+}
+
+/* Reduced motion: collapse the hover/transition choreography. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

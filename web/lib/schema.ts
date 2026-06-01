@@ -1,15 +1,19 @@
 import { z } from "zod";
 
 /**
- * judge-me-bro contracts — the single source of truth.
+ * Client-side zod mirror of the harness contracts.
  *
- * Mirrors specs/evaluation.md (Phase 1/2 schemas, §1–§3) and specs/root.md §6
- * (persona, idea, ledger). The markdown judging subagents emit the `*Output`
- * schemas; the harness validates them, computes the derived fields
- * (`weighted_total`, `meta_score`), and assembles the persisted records.
+ * These are a faithful copy of the relevant schemas in
+ * `<repo>/harness/schemas.ts` (the single source of truth). They let the web
+ * layer parse/validate harness JSON (run.json, report.json, persisted
+ * evaluations) without importing the harness package, whose entry points pull
+ * in native deps (better-sqlite3). Keep field shapes and constraints in sync
+ * with the harness; this file mirrors §1–§3 and the report view schemas.
+ *
+ * Both the zod schemas and their inferred TS types are exported.
  */
 
-/* ── §1.1 Rubric criteria & meta-dimensions (the only sources of truth) ── */
+/* ── §1.1 Enumerations (sources of truth) ───────────────────────────────── */
 export const RUBRIC_CRITERIA = ["problem", "solution", "market", "team", "traction"] as const;
 export type Criterion = (typeof RUBRIC_CRITERIA)[number];
 
@@ -19,8 +23,6 @@ export type MetaDimension = (typeof META_DIMENSIONS)[number];
 export const VERDICTS = ["advance", "borderline", "pass"] as const;
 export const AGREEMENTS = ["agree", "partially", "disagree"] as const;
 export const KINDS = ["judge", "founder"] as const;
-
-export const DEFAULT_EVALUATOR_VERSION = "eval@v1";
 
 /* ── §1.2 Common field types ────────────────────────────────────────────── */
 export const Slug = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "must be kebab-case").max(64);
@@ -33,24 +35,9 @@ export const RunId = z.string().min(1);
 export const Kind = z.enum(KINDS);
 export type Kind = (typeof KINDS)[number];
 
-/**
- * A date field tolerant of YAML auto-dating: `distilled_at: 2026-06-01` is
- * parsed to a JS Date by js-yaml, so coerce Dates back to an ISO string.
- */
-export const FlexibleDateString = z.preprocess(
-  (v) => (v instanceof Date ? v.toISOString() : v),
-  z.string().min(1),
-);
-
 /** Build a strict object keyed by exactly the five rubric criteria. */
 const criterionRecord = <T extends z.ZodTypeAny>(value: T) =>
   z.object({ problem: value, solution: value, market: value, team: value, traction: value });
-
-export const RubricWeights = criterionRecord(z.number().min(0).max(1)).refine(
-  (w) => Math.abs(RUBRIC_CRITERIA.reduce((s, c) => s + w[c], 0) - 1) <= 0.01,
-  { message: "rubric_weights must sum to 1.0 (±0.01)" },
-);
-export type RubricWeights = z.infer<typeof RubricWeights>;
 
 /* ── §1.3 JudgeRef ──────────────────────────────────────────────────────── */
 export const JudgeRef = z.object({ judge_id: Slug, judge_version: Version, kind: Kind });
@@ -122,62 +109,6 @@ export const MetaEvaluation = z
   });
 export type MetaEvaluation = z.infer<typeof MetaEvaluation>;
 
-/* ── root.md §6.1 — Persona frontmatter (the machine contract) ──────────── */
-export const PersonaFrontmatter = z.object({
-  id: Slug,
-  kind: Kind,
-  version: Version,
-  /** Optional display name for reports; falls back to a title-cased id. */
-  name: z.string().min(1).optional(),
-  source_urls: z.array(z.string().url()),
-  distilled_at: FlexibleDateString, // date (2026-06-01) or ISO timestamp
-  distilled_by: z.string().min(1), // e.g. distiller@v1
-  domains: z.array(z.string()),
-  values: z.array(z.string()),
-  red_flags: z.array(z.string()),
-  rubric_weights: RubricWeights,
-  voice: z.string().min(1),
-  calibration_notes: z.string().min(1),
-});
-export type PersonaFrontmatter = z.infer<typeof PersonaFrontmatter>;
-
-/* ── root.md §6.2 — Idea frontmatter ────────────────────────────────────── */
-export const IdeaFrontmatter = z.object({
-  id: Slug,
-  title: z.string().min(1),
-  one_liner: z.string().min(1),
-  team: z.array(z.string()).default([]),
-  // root.md shows a list; evaluation.md §2.6 shows label→url. Accept either.
-  links: z.union([z.record(z.string()), z.array(z.string())]).optional(),
-});
-export type IdeaFrontmatter = z.infer<typeof IdeaFrontmatter>;
-
-/* ── root.md §6.5 — Reputation ledger rows (SQLite) ─────────────────────── */
-export const JudgeVersionRow = z.object({
-  judge_id: Slug,
-  version: Version,
-  kind: Kind,
-  persona_path: z.string().min(1),
-  created_at: IsoTimestamp,
-});
-export const EvaluatorRow = z.object({
-  evaluator_version: EvaluatorVersion,
-  rubric_json: z.string(),
-  notes: z.string(),
-  created_at: IsoTimestamp,
-});
-export const ReputationRow = z.object({
-  judge_id: Slug,
-  judge_version: Version,
-  evaluator_version: EvaluatorVersion,
-  run_id: RunId,
-  rep_score: z.number().min(1).max(10),
-  n_meta: z.number().int().nonnegative(),
-  components_json: z.string(),
-  created_at: IsoTimestamp,
-});
-export type ReputationRow = z.infer<typeof ReputationRow>;
-
 /* ── Aggregated view consumed by the report (report/leaderboard.html DATA) ─ */
 export const ReputationComponents = z.object({
   reasoning_quality: z.number(),
@@ -218,10 +149,8 @@ export type MeanScores = z.infer<typeof MeanScores>;
 
 /**
  * A deterministic panel-level synthesis of all of a run's Phase-1 evaluations
- * for ONE idea into a single consolidated review. Built by
- * `computeIdeaReviewSummary` (harness/summary.ts) — no LLM. `consensus_verdict`
- * is the majority verdict, tie-broken by `mean_weighted_total`; the `narrative`
- * is templated from the aggregates.
+ * for ONE idea into a single consolidated review (harness/summary.ts;
+ * `computeIdeaReviewSummary`). Mirror of the harness `IdeaReviewSummary`.
  */
 export const IdeaReviewSummary = z.object({
   run_id: RunId,
