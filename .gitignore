@@ -12,3 +12,8 @@ runs/
 # nested git worktrees (parallel agent workspaces)
 .claude/worktrees/
 
+# local env / secrets (Valiron operator API key, etc. — see AGENTS.md)
+.env
+.env.*
+!.env.example
+
