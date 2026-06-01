@@ -263,6 +263,11 @@ links: [demo, repo, deck]
 
 ### 6.5 Reputation ledger (SQLite, append-only)
 
+> The logical record written into the `reputation` table is
+> [`reputation#ReputationSnapshot`](./reputation.md#22-schema-a--reputationsnapshot-persisted-record);
+> see [`reputation.md`](./reputation.md) for how `rep_score` is computed and
+> validated. The DDL below stays canonical for storage.
+
 ```sql
 -- a judge distillation snapshot
 CREATE TABLE judge_version (
