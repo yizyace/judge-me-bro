@@ -15,6 +15,16 @@
 
 ---
 
+> ⚠️ **Solana pivot (2026-06-01).** The reputation-layer feature was verified
+> against the shipped `@valiron/sdk` v1.0.2 and is now **on-chain Solana
+> (ERC-8004)**, not Web2 key-based — see
+> [`valiron-reputation-layer.md`](./valiron-reputation-layer.md). The **operator
+> key** (§2) and **secret hygiene** (§4) still apply as-is; the **agent-identity**
+> guidance in §1 (row 2) and §3, and the **M0 checks** in §5, are **superseded** by
+> the new **§7. Solana on-chain addendum** below.
+
+---
+
 ## TL;DR — the "just set it up" path
 
 1. Get an **operator API key** from the Valiron dashboard
@@ -68,6 +78,10 @@ lifetimes — never commit either.
 
 ## 3. Agent identities (key-based / Web2, EIP-191)
 
+> ⚠️ **Superseded for the reputation-layer feature** — it uses **Solana keypairs +
+> ERC-8004 registration** (§7), not this EIP-191 path. Kept for reference and any
+> other (Web2) Valiron use.
+
 Per `auth.md`, agents authenticate with an Ethereum keypair (no API key) via HTTP
 headers:
 
@@ -98,6 +112,9 @@ Never write a `val_op_…` token or a private key into a tracked file.
 
 ## 5. Still needs a live check before building (reputation-layer M0)
 
+> ⚠️ **Superseded by §7.3.** The checks below were for the earlier Web2 / key-based
+> framing. The current (Solana) M0 checks are in §7.3.
+
 These came back **thin / undocumented** and must be confirmed with a throwaway script
 against the live SDK before you rely on them
 ([`valiron-reputation-layer.md`](./valiron-reputation-layer.md) §7.2):
@@ -126,10 +143,67 @@ needed. (Exact arg/return shapes are part of the §5 M0 check.)
 
 ---
 
+## 7. Solana on-chain addendum (current design)
+
+> Supersedes the **agent-identity** guidance in §1 (row 2) and §3, and the **M0
+> checks** in §5. The **operator key** (§2) and **secret hygiene** (§4) are
+> unchanged. Full design: [`valiron-reputation-layer.md`](./valiron-reputation-layer.md).
+
+`@valiron/sdk` v1.0.2 is **read / gate only** — it has no feedback-write. So judges'
+peer feedback is written to the **ERC-8004 reputation registry on Solana directly**,
+and Valiron **reads and gates** over it.
+
+### 7.1 Credentials under this design
+
+| Credential | What | Where | Needed for |
+|---|---|---|---|
+| **Operator API key** (`val_op_…`) | unchanged — see §2 | `.env` → `VALIRON_API_KEY` (gitignored) | Valiron operator/gate calls; **optional for reads** |
+| **Judge agent identity** | a **Solana keypair** (Ed25519), one per `<slug>@<version>`, registered as an **ERC-8004 agent** (Metaplex Core asset) | gitignored `data/.solana/` | the judge's on-chain identity; the base-58 asset pubkey is `solana_agent_id` in persona frontmatter |
+| **Rater keypair** | a **funded** Solana **devnet** keypair that signs feedback writes | gitignored `data/.solana/` | writing ERC-8004 feedback entries on-chain |
+
+This **replaces** the EIP-191 / `secp256k1` key-based identity and the
+`x-agent-address` / `x-agent-signature` / `x-agent-session` flow in §3 — not used
+for this feature. Frontmatter holds `solana_agent_id` (not `valiron_agent_id`).
+
+### 7.2 SDK + env
+
+```ts
+import { ValironSDK } from "@valiron/sdk";
+const valiron = new ValironSDK({ chain: "solana" }); // not "ethereum"; no key for reads
+```
+```dotenv
+# .env (gitignored) — alongside VALIRON_API_KEY
+SOLANA_CLUSTER=devnet
+SOLANA_RPC_URL=https://api.devnet.solana.com   # or a dedicated devnet RPC
+```
+
+Extra deps beyond `@valiron/sdk`: **`@solana/web3.js`** and the ERC-8004 Solana
+program client (**QuantuLabs `8004-solana`**) for registration + feedback writes.
+
+### 7.3 Live checks before building (replaces §5)
+
+Per [`valiron-reputation-layer.md`](./valiron-reputation-layer.md) §7.2 / M0:
+
+1. **🔴 Does Valiron's read API index Solana _devnet_ ERC-8004?** Gates the whole
+   approach; fallbacks are documented in the feature spec.
+2. Exact ERC-8004 Solana **register-agent** + **submit-feedback** instructions
+   (`8004-solana`): args (`to`, `score`, `tag1`, `tag2`), signer, returned id / tx.
+3. `getAgentProfile(id, { chain: "solana" })` shape — `onchainReputation.averageScore`.
+4. Devnet **faucet** + RPC for funding the rater keypair.
+
+### 7.4 Secret hygiene (same rule as §4)
+
+`data/.solana/` is covered by the existing `data/` ignore. Never commit a keypair or
+a `val_op_…` token. If a needed secret is unset, **stop and ask** — do not fabricate
+or hardcode.
+
+---
+
 ## Sources
 
 - Valiron docs — <https://www.valiron.co/docs>
 - Auth / agent identity — <https://valiron.co/auth.md>
 - SDK reference — <https://valiron.co/docs/agents/SDK-REFERENCE.md>
+- ERC-8004 on Solana — QuantuLabs `8004-solana` (Metaplex Core) · `@solana/web3.js`
 - Installed skill — [`.claude/skills/valiron/SKILL.md`](../.claude/skills/valiron/SKILL.md)
 - Feature spec — [`valiron-reputation-layer.md`](./valiron-reputation-layer.md)
