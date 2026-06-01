@@ -1,306 +1,345 @@
 # Valiron Reputation Layer — Sub-Spec
 
-> Use **Valiron** (sponsor API) as the real, portable reputation/trust layer for
-> the AI judges, replacing the self-reported local rep_score with an external
-> trust profile that judges earn from each other.
+> Make the judges' reputation **real and verifiable**: judges are ERC-8004 agents
+> on Solana, Phase-2 meta-evaluations are written on-chain as feedback, and
+> **Valiron** (sponsor API) reads that on-chain reputation and gates which judges
+> are trusted enough to sit on the panel.
 
-- **Status:** Draft — approved direction, ready to implement
+- **Status:** Design ready — **parked**: implementation is sequenced *after* the
+  local leaderboard / reputation system lands (see *Sequencing & status* below).
 - **Owner:** Ace
 - **Last updated:** 2026-06-01
-- **Parent spec:** [`root.md`](./root.md) — read it first for the full app.
-- **Related sub-specs:** [`reputation.md`](./reputation.md) (scoring math this
-  feeds), [`hosting.md`](./hosting.md) (the `store/` seam this plugs into).
-- **Sponsor:** Valiron — <https://www.valiron.co/docs> · `@valiron/sdk`
+- **Parent spec:** [`root.md`](./root.md) — read it first for the full app; the
+  `store/` seam this plugs into is **root.md §10 (Storage & hosting)**.
+- **Related sub-specs:** [`reputation.md`](./reputation.md) (Phase-3 math + ledger
+  this feeds), [`judging-schemas.md`](./judging-schemas.md) (`MetaEvaluation`
+  contract consumed), [`valiron-setup.md`](./valiron-setup.md) (credentials runbook).
+- **Sponsor:** Valiron — <https://www.valiron.co/docs> · `@valiron/sdk` v1.0.2
+
+---
+
+## Sequencing & status (read first)
+
+**This spec is parked, not yet implementable.** It is **blocked on the local
+leaderboard / reputation system** — [`reputation.md`](./reputation.md) (Phase-3
+aggregation → `reputation#ReputationSnapshot` + the append-only ledger), the
+`report/` output, and the `store/` interface (root.md §10) + `reputation-keeper`.
+This Valiron layer is an *alternative / augmenting backend* behind the **same
+`store/` seam** (`append_reputation` / `query_reputation`) and consumes the same
+contracts (`judging-schemas#MetaEvaluation`, `reputation#ReputationSnapshot`).
+
+**Do not start implementation until that system has landed and the `store/`
+interface + reputation record are stable.** When it has:
+
+1. Implement against the finalized `store/` interface as `store/solana-rep` (write)
+   + `store/valiron` (read) — §4.
+2. Map the local per-meta-eval score (`reputation#RepComponents`) → the **0–100
+   on-chain feedback value** written in Phase 2 — §6.
+3. Reuse credentials per [`valiron-setup.md`](./valiron-setup.md): operator key via
+   `VALIRON_API_KEY` for Valiron reads/gate; add the **Solana rater keypair** under
+   the already-gitignored `data/.solana/`.
+
+> ⚠️ **Reconciliation needed:** [`valiron-setup.md`](./valiron-setup.md) was written
+> against this spec's *earlier* Web2 / key-based framing (EIP-191 identities under
+> `data/.valiron/`, a "feedback-write for key-based agents"). Under this verified
+> design the identities are **Solana keypairs** and the feedback write goes to the
+> **ERC-8004 Solana program directly** (not a Valiron SDK call). That runbook needs
+> a short Solana addendum when this is picked up — flagged here, not yet applied.
 
 ---
 
 ## 0. Context for a cold-start implementer
 
-*Judge Me Bro* distills real hackathon judges + "smart founders" into persona
-files, manifests each as a Claude subagent, and runs a two-phase pipeline:
-**Phase 1** judges score ideas in parallel; **Phase 2** judges critique each
-other's evaluations, producing a **judge-to-judge reputation**. Today that
-reputation is a number computed and stored in local SQLite (`data/jmb.sqlite`).
+*Judge Me Bro* distills hackathon judges + "smart founders" into persona files,
+manifests each as a Claude subagent, and runs a two-phase pipeline: **Phase 1**
+judges score ideas; **Phase 2** judges critique each other's evaluations,
+producing a **judge-to-judge reputation**. Today that reputation is a number in
+local SQLite. This spec moves the *peer reputation* on-chain and uses Valiron as
+the trust layer over it.
 
-**This spec swaps the home of that reputation.** A judge is an AI agent.
-**Valiron is a reputation & trust system for AI agents.** So the judges' rep
-ledger becomes a Valiron trust profile: judges earn reputation from each other's
-meta-evaluations, and Valiron decides who is trusted enough to sit on the panel.
+A judge is an AI agent. **Valiron is a trust/reputation system for AI agents**
+built on the **ERC-8004** reputation registry. So: register each judge as an
+ERC-8004 agent on Solana, write judge↔judge feedback to that registry, and let
+Valiron aggregate + gate it.
 
 ---
 
 ## 1. One-paragraph pitch
 
-Each distilled judge registers as a **key-based Valiron agent** (Web2, EIP-191
-challenge-response — no wallet, no chain). Phase-2 meta-evaluations are submitted
-as **Valiron reputation feedback** about the target judge. The leaderboard is
-read straight from Valiron via `getAgentProfile()`, and the orchestrator calls
-`checkAgent()` to **gate the panel** — a judge's votes only count at full weight
-once Valiron trusts it (`prod`), and are discounted while it is still in
-`sandbox`. The demo punchline: re-distill a weak judge, it re-enters Valiron's
-sandbox as a fresh agent, earns peer reputation, and Valiron **promotes it to
-`prod`** — measurable improvement on a leaderboard we don't own.
+Each of ~3 demo judges is registered as an **ERC-8004 agent on Solana devnet**
+(a Metaplex Core asset). Each Phase-2 meta-evaluation is written **on-chain** as
+a feedback entry (score 0–100) about the target judge. The leaderboard is read
+straight from Valiron via `getAgentProfile(id, { chain: "solana" })` →
+`onchainReputation.averageScore`, and the orchestrator calls `checkAgent()` /
+`gate()` to **admit and weight the panel** by Valiron's trust tier. The demo
+punchline: re-distill a weak judge, the other judges' on-chain feedback moves its
+`averageScore`, Valiron re-tiers it — and every feedback entry is verifiable by
+transaction hash on a Solana explorer. The reputation is no longer a number we
+report about ourselves; it's on a public registry that Valiron independently reads.
 
 ---
 
-## 2. Decisions locked (do not relitigate without flagging)
+## 2. Decisions locked (verified against the SDK — do not relitigate without flagging)
 
-| Decision | Choice | Why |
+| Decision | Choice | Why / evidence |
 |---|---|---|
-| **Direction** | Valiron is the **reputation layer** (not a payment/access gate, not persona provenance) | Same shape as the app's core; minimal surface |
-| **Web3 depth** | **Web2 key-based agents only** (EIP-191) | "Killer but simple" — no wallets/testnet during a timebox; stays close to local-first |
-| **Integration seam** | The existing `store/` interface (`root.md` §10) | `append_reputation` / `query_reputation` already abstract this; ~1 new impl |
-| **Source of truth** | Valiron, with **SQLite as optional local cache** | Keeps the rest of the pipeline untouched; offline-debuggable |
+| **Direction** | Valiron is the **reputation layer** | Same shape as the app's core |
+| **Web3 depth** | **On-chain, Solana devnet**, ERC-8004 | The peer-feedback write *requires* on-chain — see §3.1 |
+| **Scope** | **"Thin"** — ~3 judges, one shared funded "rater" keypair | Bounds keypair/funding surface for the timebox |
+| **Who writes feedback** | **We do**, directly to the ERC-8004 Solana program | `@valiron/sdk` has **no** feedback-write (verified, §3.1) |
+| **Who reads/gates** | **Valiron**, via `@valiron/sdk` (no API key for reads) | `getAgentProfile` / `checkAgent` / `gate` are read-only |
+| **Integration seam** | The existing `store/` interface (`root.md` §10) | `append_reputation` (write) / `query_reputation` (read) |
 
-**Explicitly out of scope** (deferred; these are the directions *not* chosen):
-on-chain/ERC-8004 wallets, x402/MPP payments, World ID / Icebreaker
-human-ownership attestation, multi-tenant auth.
+**Explicitly out of scope:** EVM/Ethereum, World ID / Icebreaker attestation,
+x402/MPP payments, mainnet, per-judge owner wallets (that's "Full Solana", §11).
 
 ---
 
-## 3. The core mechanic — three mappings
+## 3. The division of labor (read this before designing anything)
 
-| judge-me-bro concept | becomes, in Valiron |
-|---|---|
-| A judge casting Phase-1 evaluations | A key-based agent making *gated requests* → auto-sandboxed on first use, behaviorally scored |
-| Phase-2 meta-evaluation (judge A rates judge B) | A **reputation feedback** entry submitted about agent B |
-| The reputation leaderboard | `getAgentProfile(judgeId)` — combined peer + behavioral trust |
-| "Is this judge trusted enough to count?" | `checkAgent(judgeId)` → `prod` / `prod_throttled` / `sandbox` / `sandbox_only` |
+This is the single most important thing to get right. After reading the shipped
+type definitions and `docs/API-REFERENCE.md`, the truth is:
 
-**The demo moment (this is the M4 deliverable in `root.md` §11, upgraded):**
-A freshly re-distilled `judge-x@v2` registers as a *new* key-based agent → starts
-in Valiron **sandbox** → the other judges' Phase-2 meta-evaluations submit peer
-reputation about it → Valiron **promotes it to `prod`** → it climbs a trust
-leaderboard that lives outside our repo. "We improved a judge and its reputation
-went up" stops being a self-reported SQLite number and becomes externally
-verifiable trust.
+| Step | Who | How |
+|---|---|---|
+| Register a judge as an agent | **us** | ERC-8004 Solana program (Metaplex Core asset pubkey) via QuantuLabs `8004-solana` + `@solana/web3.js` |
+| Write judge→judge feedback (0–100) | **us** | Directly to the ERC-8004 feedback program, from a funded devnet keypair |
+| **Read** aggregated reputation | **Valiron** | `getAgentProfile(id,{chain:"solana"})` → `onchainReputation.averageScore` + `feedbackEntries[]` |
+| **Gate / weight** the panel | **Valiron** | `checkAgent(id)` / `gate(id,{trustSignals,minScore})` |
+
+### 3.1 Why we write it ourselves (the corrected assumption)
+`@valiron/sdk` v1.0.2 is a **read/eval HTTP client only** (`ValironClient`,
+"not blockchain-specific"). It exposes **no** `submitFeedback`/`review`/`rate`.
+The `giveFeedback()` mentioned in the docs is **Valiron's own automatic
+write-back of its behavioral score** (server-side, via `SOLANA_FEEDBACK_KEYPAIR`),
+**not** a hook for our peer scores. Therefore our meta-eval scores must be written
+to the ERC-8004 registry **directly**, and Valiron then reads them. Do not look
+for a Valiron feedback-write method — there isn't one.
+
+### 3.2 Why this is still a strong Valiron integration
+Valiron's whole model is reading ERC-8004 reputation and turning it into a trust
+decision. Per `docs/TRUST-MODEL.md`, the blended trust score weights **on-chain
+reputation ~25%** and **behavioral sandbox ~55%** (human attestations lower),
+normalized to 0–100 → Moody's-style tiers → routing (`AAA–A`→`prod`, … `CAA–C`→
+`sandbox_only`). So Valiron genuinely consumes our judge↔judge reputation to
+admit/weight the panel. (Tunable: `gate({ trustSignals: ["8004","sandbox"],
+minScore })`.)
 
 ---
 
 ## 4. Architecture & integration surface
 
-The whole point of this design is that Valiron lands at **one seam** the app
-already has. `root.md` §10 defines a `store/` abstraction
-(`put_persona`, `get_persona`, `list_judges`, `append_reputation`,
-`query_reputation`). Everything below hangs off that.
+Everything hangs off the `store/` abstraction (`root.md` §10:
+`append_reputation` / `query_reputation`). **Write** and **read** land in two
+small modules so neither side is tangled.
 
 ```
-                 Phase 2 meta-evals          Phase 1 vote tally
-                        │                            │
-                        ▼                            ▼
-   store.append_reputation(judge, rep_score)   checkAgent(judgeId)  ← gate/weight
-                        │                            │
-                        ▼                            ▼
-            ┌───────────────────────────────────────────────┐
-            │              store/valiron.*                    │
-            │  append_reputation → submit Valiron feedback    │
-            │  query_reputation  → getAgentProfile/checkAgent │
-            └───────────────────────┬───────────────────────┘
-                                    │  @valiron/sdk
-                                    ▼
-                          Valiron trust registry
-                       (key-based agents, ERC-8004)
+        Phase 2 meta-evals                         Phase 1 vote tally
+               │                                          │
+               ▼ store.append_reputation(target, 0..100)  ▼ checkAgent / gate
+        ┌─────────────────────┐                    ┌─────────────────────┐
+        │  store/solana-rep.*  │  WRITE             │   store/valiron.*    │  READ
+        │  ERC-8004 feedback   │                    │  getAgentProfile /   │
+        │  via @solana/web3.js │                    │  checkAgent / gate   │
+        └──────────┬───────────┘                    └──────────┬──────────┘
+                   │ funded rater keypair                      │ @valiron/sdk (no key)
+                   ▼                                           ▼
+        Solana devnet — ERC-8004 reputation registry  ◀────  Valiron reads it back
 ```
 
 ### Files to add / touch
 
 | Path | Change | Notes |
 |---|---|---|
-| `store/valiron.*` | **new** | Implements the `store/` interface against Valiron. `append_reputation` → submit feedback; `query_reputation` → `getAgentProfile` + `checkAgent`. Optionally write-through to SQLite cache. |
-| `store/valiron-client.*` | **new** | Thin wrapper: construct `new ValironSDK({...})`, hold config, manage per-judge agent identities + signing. |
-| `store/identity.*` | **new** | Generate/load a key-based agent identity per `<slug>@<version>`; sign EIP-191 challenges. Private keys **never** committed (see §5). |
-| `cli/register-judges.*` | **new** | One-time/idempotent: ensure every active judge has a Valiron identity + is known to Valiron. |
-| `personas/**/*.md` frontmatter | **+1 field** | `valiron_agent_id` (stable per version). See §5. |
-| `specs/persona-schema.md` | **+1 field doc** | Document `valiron_agent_id`. |
-| `agents/orchestrator` (Phase-1 tally) | **+1 hook** | `checkAgent(judgeId)` → weight each judge's vote (table in §6). |
-| `agents/reputation-keeper.md` | **swap call** | Phase-3 writes via `store.append_reputation` (now Valiron-backed) instead of direct SQLite. |
-| `data/.valiron/` (gitignored) | **new** | Local home for key material + agentId map. |
+| `store/solana-rep.*` | **new** | WRITE side. `append_reputation(targetAgentId, score, rater)` → submit ERC-8004 feedback on Solana. Holds the rater keypair (loaded from gitignored store). |
+| `store/valiron.*` | **new** | READ side. `query_reputation(agentId)` → `getAgentProfile`/`checkAgent`/`gate` via `@valiron/sdk`. |
+| `store/solana-identity.*` | **new** | Register a judge agent → returns `solana_agent_id`; manage owner/registrar + rater keypairs. |
+| `cli/register-judges.*` | **new** | One-time/idempotent: register each active judge on devnet, fund the rater keypair (faucet), write `solana_agent_id` back to frontmatter. |
+| `personas/**/*.md` frontmatter | **+1 field** | `solana_agent_id` (Metaplex Core asset pubkey, stable per `@version`). |
+| `specs/persona-schema.md` | **+1 field doc** | Document `solana_agent_id`. |
+| `agents/orchestrator` (Phase-1 tally) | **+1 hook** | `checkAgent(judgeId)` → weight each judge's vote (§6 table). |
+| `agents/reputation-keeper.md` | **swap calls** | Phase-2 → `store.append_reputation`; Phase-3 reads `store.query_reputation`. |
+| `package.json` | **+deps** | `@valiron/sdk`, `@solana/web3.js`, ERC-8004 Solana program client (QuantuLabs `8004-solana` or equivalent). |
+| `data/.solana/` (gitignored) | **new** | Keypairs (rater, registrar) + agentId map. |
+| `.gitignore` / `.git/info/exclude` | **+1 line** | Ensure `data/.solana/` is never tracked. |
 
-Nothing else in the pipeline changes: **~3 small modules + 1 CLI command + 1
-orchestrator hook + 1 frontmatter field.**
+### Config / env
+`chain: "solana"`, `SOLANA_CLUSTER=devnet`, `SOLANA_RPC_URL=<devnet rpc>`,
+`VALIRON_KEYSTORE_DIR` (override for hosting). The rater keypair path lives under
+`data/.solana/` by default.
 
 ---
 
 ## 5. Data model changes
 
 ### 5.1 Persona frontmatter — one new field
-
 ```yaml
 # personas/judges/<slug>@<version>.md  (frontmatter)
-valiron_agent_id: "vln_agent_<...>"   # stable per (slug, version); assigned at register time
+solana_agent_id: "<base58 Metaplex Core asset pubkey>"   # assigned at register time, stable per version
 ```
-
-A judge's identity is bound to `<slug>@<version>` so that **re-distilling bumps
-the version → a brand-new agent → re-enters Valiron's sandbox**. That fresh-start
-is what makes the "did the new version actually judge better?" comparison honest
-(and is the demo's spine).
+Identity is bound to `<slug>@<version>` so **re-distilling bumps the version → a
+new agent → fresh on-chain reputation**, which is what makes "did the new version
+judge better?" an honest, verifiable comparison (and is the demo's spine).
 
 ### 5.2 Key material (security — do not get this wrong)
-
-Key-based agents authenticate by signing an EIP-191 challenge with a private key.
-
-- **Private keys are secrets.** Store under `data/.valiron/` which **must** be
-  gitignored. Never write a private key into a persona file or anything tracked.
-- Frontmatter holds only the **public** `valiron_agent_id` (and optionally the
-  public key/address). The signer in `store/identity.*` loads the private key
-  from the gitignored store at run time.
-- Provide an env override (`VALIRON_KEYSTORE_DIR`) so hosting can inject keys
-  from a secret manager later without code changes.
+- Solana keypairs are secrets. Store under **gitignored** `data/.solana/` (already
+  covered by the repo's existing `data/` ignore — see [`valiron-setup.md`](./valiron-setup.md)
+  §4). Never write a private key into a persona file or anything tracked
+  (`git status` must stay clean).
+- The **operator** key (`VALIRON_API_KEY` in `.env`) used for Valiron reads/gate is
+  a *separate* secret managed per [`valiron-setup.md`](./valiron-setup.md) §2 — do
+  not conflate it with the per-agent Solana keypair.
+- Frontmatter holds only the **public** `solana_agent_id`.
+- `VALIRON_KEYSTORE_DIR` env override lets hosting inject keys from a secret
+  manager later without code changes.
 
 ---
 
 ## 6. Pipeline integration
 
 ### Phase 1 — gate + weight the panel
-Before a judge's evaluations are tallied, the orchestrator calls
-`checkAgent(judgeId)` and weights that judge's contribution:
+Before a judge's evaluations are tallied, call `checkAgent(judgeId)` (or
+`gate(judgeId, { minScore, trustSignals: ["8004","sandbox"] })`) and weight:
 
-| `checkAgent` result | Vote weight | Meaning |
+| `checkAgent` / `gate.route` | Vote weight | Meaning |
 |---|---|---|
-| `prod` | **1.0** | Fully trusted judge |
-| `prod_throttled` | **0.7** | Trusted but rate-limited / partial |
-| `sandbox` | **0.3** | Provisional — counted but discounted (shadow) |
-| `sandbox_only` | **0.0** | Shown in report, excluded from the tally |
+| `prod` | **1.0** | Fully trusted |
+| `prod_throttled` | **0.7** | Trusted, partial |
+| `sandbox` | **0.3** | Provisional (shadow) |
+| `sandbox_only` | **0.0** | Shown, excluded from tally |
 
-> Weights are a **starting proposal**, not gospel — tune during the demo. Keep
-> them in one config constant (`evaluator_version`-bound per `root.md` §6.5 so a
-> change forks a new evaluator and comparisons stay apples-to-apples).
+> Starting weights — tune live. Keep them in one `evaluator_version`-bound
+> constant (`root.md` §6.5) so a change forks a new evaluator and version
+> comparisons stay apples-to-apples.
 
-### Phase 2 — meta-evals become reputation feedback
-Each meta-evaluation already yields a `rep_score` via the existing math
-(`root.md` §7, Phase 3 baseline):
-
+### Phase 2 — meta-evals become on-chain feedback
+The existing per-meta-eval score (`root.md` §7):
 ```
 rep_score = 0.4·reasoning + 0.3·calibration + 0.3·insight − 0.2·bias
 ```
-
-Submit that value as **one Valiron reputation-feedback entry** about the target
-judge's `valiron_agent_id` (rater = the rating judge's agent id). The
-self-exclusion guard from `critique-evaluation` still applies (a judge never
-rates itself).
+is scaled/clamped to a **0–100 integer** and written as **one ERC-8004
+FeedbackEntry** about the target judge's `solana_agent_id`. Self-exclusion still
+applies (a judge never rates itself; ERC-8004 also blocks self-feedback). In thin
+scope, all entries are signed by the **one shared rater keypair**, so encode the
+rating judge's id in `tag1`/`tag2` for traceability (see §11 for the per-rater
+upgrade).
 
 ### Phase 3 — leaderboard from Valiron
-`reputation-keeper` reads each judge's `getAgentProfile(judgeId)` to build
-`report.md`'s leaderboard. The append-only guarantee from `root.md` §6.5 is
-preserved — feedback entries accrete; Valiron *is* the append-only ledger. Keep
-the SQLite mirror if useful for offline diffing.
+`reputation-keeper` reads `getAgentProfile(judgeId, { chain: "solana" })`:
+- **Leaderboard number** = `onchainReputation.averageScore` (the pure peer
+  reputation we wrote — the cleanest reflection of judge↔judge quality).
+- **Admission/tier** = `checkAgent` / `gate` route + tier (Valiron's blended
+  trust). Show both in `report.md`; link each feedback entry's `transactionHash`
+  to a Solana explorer for the "it's real" moment.
 
 ---
 
-## 7. Valiron SDK reference
+## 7. Valiron / Solana reference (verified vs. to-confirm)
 
-### 7.1 Confirmed (from the published README)
-
+### 7.1 Confirmed (shipped type defs + docs)
 ```ts
 import { ValironSDK } from "@valiron/sdk";
-const valiron = new ValironSDK({ chain: "ethereum" }); // no API key needed for reads
+const valiron = new ValironSDK({ chain: "solana" });   // no API key for reads
+// env: SOLANA_CLUSTER=devnet, SOLANA_RPC_URL=<devnet>
 
-await valiron.checkAgent(agentId); // → "prod" | "prod_throttled" | "sandbox" | "sandbox_only"
-await valiron.gate(agentId);       // → { allow: boolean }  (runs sandbox tests if needed)
+await valiron.getAgentProfile(agentId, { chain: "solana" });
+//  → AgentProfile { onchainReputation: { count, averageScore, feedbackEntries[], totalFeedback },
+//                   localReputation, routing, chain, ... }
+await valiron.checkAgent(agentId);   // → "prod" | "prod_throttled" | "sandbox" | "sandbox_only"
+await valiron.gate(agentId, { minScore: 65, trustSignals: ["8004","sandbox"] });
+//  → { allow, score, tier, riskLevel, route, agentId, wallet, chain, sandboxRan, cached }
 ```
+- `FeedbackEntry { from, score, tag1, tag2, uri?, hash?, transactionHash?, feedbackIndex?, isRevoked? }`
+- Solana agent IDs are **base-58 Metaplex Core asset pubkeys** (not numeric).
+- Trust model weights/tiers as in §3.2.
 
-- **Key-based (Web2) agents:** supported via **EIP-191 challenge-response**,
-  *auto-detected and auto-sandboxed* on first gated request. This is the path
-  this spec uses.
-- `getAgentProfile(agentId)` and `resolveWallet(...)` exist; full signatures live
-  in the fuller "SDK Reference" (`resolveWallet` is on-chain only — not needed
-  here).
-- Middleware helpers exist (`createValironGate({ sdk })` for Express/Fastify/
-  Next.js) — optional, see §8.
+### 7.2 MUST be confirmed in M0 (de-risk first)
+1. **🔴 Does Valiron's read API index Solana _devnet_ ERC-8004?** If the hosted
+   `/operator/agent/:id?chain=solana` only reads `mainnet-beta`, devnet feedback
+   won't appear in `getAgentProfile`. **This gates the whole approach.** Fallbacks
+   if devnet is unindexed: (a) self-host/point the Valiron operator at devnet if
+   supported; (b) read `onchainReputation` directly from the registry for the
+   leaderboard and use Valiron only where it works; (c) budget a tiny amount of
+   mainnet SOL. Decide before building.
+2. The exact ERC-8004 Solana **register-agent** and **submit-feedback**
+   instructions (QuantuLabs `8004-solana`): args (`to`, `score`, `tag1`, `tag2`),
+   signer, and returned agent id / tx hash.
+3. Whether `getAgentProfile` needs the agent to have made a gated request before a
+   profile exists on Solana.
+4. Devnet **faucet** + RPC for funding the rater keypair.
 
-### 7.2 MUST be confirmed before building (de-risk first — see M0)
-
-1. **Feedback-write path for key-based agents.** The exact call to submit a
-   reputation/feedback entry about an agent (the ERC-8004 "feedback registry"
-   write). The README does not show it; confirm method name, args, auth, and
-   whether it is available to key-based (non-wallet) agents.
-2. **`getAgentProfile` return shape** — which numeric fields represent peer
-   reputation vs. behavioral score, so the leaderboard reads the right number.
-3. **Identity/registration flow** — how a key-based `valiron_agent_id` is created
-   and how the EIP-191 challenge-response is performed via the SDK.
-4. **Whether a profile exists before any gated request** — `checkAgent` on a
-   never-seen agent may need a first `gate()` call to trigger sandboxing.
-
-> **Honesty rule:** do not build on §7.2 assumptions as if confirmed. If a check
-> fails, fall back (§8) rather than faking the call.
+> **Honesty rule:** do not build on §7.2 as if confirmed. If M0 #1 fails, switch
+> to a documented fallback rather than faking the read.
 
 ---
 
-## 8. Scope: core, cherry, fallback
+## 8. Milestones (de-risk the unknown first)
 
-- **Core (the demo):** register judges as key-based agents → submit Phase-2
-  meta-evals as Valiron feedback → leaderboard from `getAgentProfile` → gate +
-  weight Phase-1 votes via `checkAgent`. Sandbox→prod promotion is the story.
-- **Cherry (only if cheap):** route a judge's evaluation submission through a
-  local `createValironGate`-protected endpoint so the *act of judging* is itself
-  a gated request that accrues behavioral signal. Skip if it adds a server you
-  don't otherwise need — `gate()`/`checkAgent()` called directly from the
-  orchestrator is enough.
-- **Fallback (if §7.2.1 feedback-write is unavailable for key-based agents):**
-  keep SQLite as source of truth for `rep_score`; use Valiron as the **gate**
-  (`checkAgent`/`gate`) + verifiable **identity** + behavioral layer, mirroring
-  scores where the API allows. Still a meaningful, demoable Valiron integration —
-  just less "Valiron IS the ledger."
-
----
-
-## 9. Milestones (de-risk the unknown first)
-
-1. **M0 — SDK spike (≈45m, BLOCKING):** install `@valiron/sdk`; create one
-   key-based agent; resolve every item in §7.2 with a throwaway script. Decide
-   core-vs-fallback (§8) based on what the feedback-write supports. **Everything
-   else depends on this.**
-2. **M1 — Identity + register (≈1h):** `store/identity.*` (keygen + EIP-191
-   signing, gitignored keystore) + `cli/register-judges`; add `valiron_agent_id`
-   to persona frontmatter + `persona-schema.md`.
-3. **M2 — Store impl (≈1.5h):** `store/valiron-client.*` + `store/valiron.*`
-   implementing `append_reputation` (feedback submit) and `query_reputation`
-   (`getAgentProfile`/`checkAgent`), with optional SQLite write-through.
-4. **M3 — Pipeline wiring (≈1h):** Phase-2 → `append_reputation`; Phase-1 vote
-   weighting via `checkAgent` (§6 table); `reputation-keeper` reads the Valiron
-   leaderboard into `report.md`.
-5. **M4 — The demo (≈30m):** run a panel, improve one judge, bump version,
-   re-run, show the new version promoted in Valiron and the leaderboard moving.
+1. **M0 — Spike (≈1h, BLOCKING):** install `@valiron/sdk` + `@solana/web3.js` +
+   `8004-solana`; on devnet, register one agent, write one feedback entry, then
+   `getAgentProfile(id,{chain:"solana"})` and confirm `averageScore`/
+   `feedbackEntries` reflect it. **Resolve §7.2 #1 here.** Decide go / fallback.
+2. **M1 — Identity + register (≈1.5h):** `store/solana-identity.*` +
+   `cli/register-judges`; register 3 judges, fund rater, write `solana_agent_id`
+   to frontmatter + `persona-schema.md`. Keep `data/.solana/` gitignored.
+3. **M2 — Store impls (≈2h):** `store/solana-rep.*` (`append_reputation` →
+   ERC-8004 feedback) + `store/valiron.*` (`query_reputation` → profile/gate).
+4. **M3 — Pipeline wiring (≈1h):** Phase-2 → `append_reputation`; Phase-1
+   weighting via `checkAgent`; `reputation-keeper` builds the leaderboard from
+   `averageScore` + tier.
+5. **M4 — The demo (≈45m):** run a panel, improve one judge, bump version,
+   re-run; show the new agent's on-chain `averageScore` move + Valiron re-tier,
+   with feedback tx hashes on a Solana explorer.
 
 ---
 
-## 10. Acceptance criteria
-
-- [ ] Each active judge has a stable `valiron_agent_id`; private keys are **not**
-      tracked by git (`git status` clean; key material under gitignored
-      `data/.valiron/`).
-- [ ] `store/valiron.*` satisfies the same `store/` interface as the local impl;
-      swapping is a config change (no other module imports Valiron directly).
-- [ ] Phase-2 meta-evaluations result in reputation visible via
-      `getAgentProfile` (core) **or**, in fallback mode, a documented reason and
-      working gate-only integration.
-- [ ] Phase-1 tally weights votes by `checkAgent` result per §6.
-- [ ] `report.md` leaderboard is sourced from Valiron.
-- [ ] **Demo:** a re-distilled judge measurably changes Valiron trust state
-      (sandbox→prod and/or rising reputation) across a version bump, against a
+## 9. Acceptance criteria
+- [ ] 3 judges registered as ERC-8004 Solana (devnet) agents; `solana_agent_id`
+      in frontmatter; **keypairs untracked** (`git status` clean; keys under
+      gitignored `data/.solana/`).
+- [ ] Each Phase-2 meta-eval appears as an on-chain `FeedbackEntry` (verifiable
+      by `transactionHash`).
+- [ ] `getAgentProfile(...,{chain:"solana"})` returns `onchainReputation.
+      averageScore` reflecting those entries; leaderboard sourced from it.
+- [ ] Phase-1 tally weights votes by `checkAgent`/`gate` per §6.
+- [ ] No module imports Valiron or Solana libs except the three `store/*` files
+      (the seam stays swappable).
+- [ ] **Demo:** a re-distilled judge measurably changes its on-chain
+      `averageScore` (and ideally Valiron tier) across a version bump, against a
       fixed `evaluator_version`.
 
 ---
 
-## 11. Open questions / risks
+## 10. Open questions / risks
+- **🔴 Valiron devnet indexing (M0 #1)** — the make-or-break unknown.
+- **On-chain rep is only ~25% of the blended tier** (sandbox ~55%) → render the
+  leaderboard from `averageScore` directly, and/or `gate({trustSignals:["8004"]})`
+  so peer feedback visibly moves the gate.
+- **Thin scope uses one shared rater key** → `from` attribution collapses; encode
+  the rater in `tag1/tag2`. (Full Solana, §11, restores real per-rater `from`.)
+- **Devnet RPC flakiness / rate limits** → pre-warm agents, cache reads, batch
+  writes; have the SQLite mirror as a narrated backup if the network stalls.
+- **Third-party `8004-solana` maturity** → pin the version; confirm its API in M0.
+- **Cost/latency** of N registrations + N×M feedback writes on devnet → keep N=3,
+  batch ideas.
 
-- **Behavioral signal may be thin** for abstract judge agents that don't serve a
-  real API → peer feedback (Phase 2) is what actually moves reputation. This is
-  fine (and on-theme), but it makes §7.2.1 the linchpin — confirm it in M0.
-- **`chain` config for key-based agents:** README inits with `chain: "ethereum"`;
-  confirm the right value/options for the Web2 key-based path during M0.
-- **Rate limits / latency** on N judges × M feedback writes during a live demo —
-  cap panel size, batch writes, and pre-warm agents before presenting.
-- **Determinism for the demo:** Valiron promotion timing may vary; rehearse and
-  have the SQLite mirror as a narrated backup if the network is flaky.
+---
+
+## 11. Upgrade path (post-hackathon) — "Full Solana"
+Give each judge its **own** owner + rater keypair so every feedback entry's `from`
+is the actual rating judge (true peer attribution), add EVM/ERC-8004 parity behind
+the same `store/` seam, and move to mainnet with a funded treasury. None of this
+changes the interface — only the identity/keypair management in `store/solana-*`.
 
 ---
 
 ## 12. References
-
-- Valiron docs — <https://www.valiron.co/docs>
-- Valiron home — <https://www.valiron.co/>
-- SDK — `@valiron/sdk` (npm); README mirror:
-  <https://unpkg.com/@valiron/sdk/README.md>
+- Valiron docs — <https://www.valiron.co/docs> (`CHAINS.md`, `TRUST-MODEL.md`,
+  `API-REFERENCE.md`, `SDK-REFERENCE.md` ship inside the npm package under `docs/`)
+- `@valiron/sdk` README mirror — <https://unpkg.com/@valiron/sdk/README.md>
+- ERC-8004 on Solana — QuantuLabs `8004-solana` (Metaplex Core assets)
+- `@solana/web3.js` — Solana client for registration + feedback writes
+- Credentials runbook — [`valiron-setup.md`](./valiron-setup.md) · `MetaEvaluation`
+  contract — [`judging-schemas.md`](./judging-schemas.md)
 - Parent: [`root.md`](./root.md) · math: [`reputation.md`](./reputation.md) ·
-  seam: [`hosting.md`](./hosting.md)
+  `store/` seam: **root.md §10 (Storage & hosting)**
