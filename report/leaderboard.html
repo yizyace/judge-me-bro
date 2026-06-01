@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Judge Me Bro — Reputation Leaderboard</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #151922;
+    --panel-2: #1c2230;
+    --line: #2a3242;
+    --text: #e7ecf3;
+    --muted: #93a0b4;
+    --accent: #6ea8fe;
+    --good: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --bar-bg: #232b3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(1200px 600px at 70% -10%, #16203a 0%, var(--bg) 55%);
+    color: var(--text);
+    padding: 32px clamp(16px, 5vw, 64px) 64px;
+    -webkit-font-smoothing: antialiased;
+  }
+  header.page { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+  h1 { font-size: clamp(28px, 4vw, 44px); margin: 0; letter-spacing: -0.02em; }
+  h1 .bro { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 14px; }
+  .meta { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; margin: 6px 0 28px; }
+  .meta code { color: var(--text); background: var(--panel-2); padding: 2px 7px; border-radius: 6px; }
+
+  .board { display: flex; flex-direction: column; gap: 14px; }
+  .row {
+    display: grid;
+    grid-template-columns: 56px 1fr 132px;
+    align-items: center;
+    gap: 18px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 22px;
+    transition: transform .12s ease, border-color .12s ease;
+  }
+  .row:hover { transform: translateY(-2px); border-color: #38445a; }
+  .row.top { border-color: #3b557f; background: linear-gradient(180deg, #18243c, var(--panel)); }
+
+  .rank { font-size: 30px; font-weight: 800; color: var(--muted); text-align: center; }
+  .row.top .rank { color: var(--accent); }
+  .rank .medal { font-size: 26px; }
+
+  .who { min-width: 0; }
+  .name { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .tag { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; }
+  .tag.judge { background: #243b6b; color: #bcd0ff; }
+  .tag.founder { background: #314026; color: #c8e6a0; }
+  .ver { color: var(--muted); font-size: 13px; font-weight: 600; }
+  .delta { font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 999px; }
+  .delta.up { background: rgba(74,222,128,.15); color: var(--good); }
+  .delta.down { background: rgba(248,113,113,.15); color: var(--bad); }
+  .delta.flat { background: var(--panel-2); color: var(--muted); }
+
+  .dims { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 18px; margin-top: 12px; }
+  .dim { font-size: 12px; }
+  .dim .lbl { display: flex; justify-content: space-between; color: var(--muted); margin-bottom: 4px; }
+  .dim .lbl .v { color: var(--text); font-weight: 700; }
+  .track { height: 7px; background: var(--bar-bg); border-radius: 99px; overflow: hidden; }
+  .fill { height: 100%; border-radius: 99px; }
+  .fill.good { background: linear-gradient(90deg, #2f6f4f, var(--good)); }
+  .fill.bias { background: linear-gradient(90deg, #7a3b3b, var(--bad)); }
+
+  .score { text-align: right; }
+  .score .big { font-size: 38px; font-weight: 800; line-height: 1; }
+  .score .scale { color: var(--muted); font-size: 12px; }
+  .score .n { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+  footer { margin-top: 36px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  footer code { background: var(--panel-2); padding: 1px 6px; border-radius: 5px; color: var(--text); }
+  @media (max-width: 640px) {
+    .row { grid-template-columns: 40px 1fr; }
+    .score { grid-column: 2; text-align: left; margin-top: 6px; }
+    .dims { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+  <header class="page">
+    <div>
+      <h1>Judge Me <span class="bro">Bro</span> — Reputation Leaderboard</h1>
+      <div class="sub">Which AI judge judges best? Ranked by peer-derived reputation.</div>
+    </div>
+  </header>
+  <div class="meta" id="meta"></div>
+
+  <div class="board" id="board"></div>
+
+  <footer>
+    <strong>Reading this:</strong> reputation = mean <code>meta_score</code> across all critiques a judge received in Phase 2.
+    Each bar is a dimension mean. <em>Bias</em> is a penalty (shorter is better).
+    The <code>▲</code> badge shows the change from the judge's previous distilled version against the same evaluator.<br>
+    <strong>Live data:</strong> replace the <code>DATA</code> block in this file with the aggregated
+    <code>ReputationSnapshot[]</code> from <code>runs/&lt;run_id&gt;/</code> (schema in <code>specs/root.md §6.5</code>) and reload.
+  </footer>
+
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   DATA — replace with the run's aggregated reputation snapshots.
+   Shape per row matches ReputationSnapshot (specs/root.md §6.5), plus a
+   display `name` and an optional `prev_rep_score` for the version-delta badge.
+   ───────────────────────────────────────────────────────────────────────── */
+/* DATA:START */
+const DATA = {
+  run_id: "2026-06-01T18-00Z",
+  evaluator_version: "eval@v1",
+  snapshots: [
+    {
+      name: "Paul Graham", judge: { judge_id: "paul-graham", judge_version: 3, kind: "founder" },
+      rep_score: 8.4, prev_rep_score: 7.1, n_meta: 12,
+      components: { reasoning_quality: 8.7, calibration: 8.1, insight: 9.0, bias: 2.4 }
+    },
+    {
+      name: "Jessica Livingston", judge: { judge_id: "jessica-livingston", judge_version: 2, kind: "founder" },
+      rep_score: 7.9, prev_rep_score: 7.9, n_meta: 12,
+      components: { reasoning_quality: 8.2, calibration: 8.4, insight: 7.6, bias: 2.1 }
+    },
+    {
+      name: "Judge — Dana Reyes", judge: { judge_id: "dana-reyes", judge_version: 1, kind: "judge" },
+      rep_score: 7.3, n_meta: 12,
+      components: { reasoning_quality: 7.5, calibration: 7.0, insight: 7.8, bias: 3.2 }
+    },
+    {
+      name: "Judge — Marcus Liang", judge: { judge_id: "marcus-liang", judge_version: 1, kind: "judge" },
+      rep_score: 6.6, n_meta: 12,
+      components: { reasoning_quality: 6.9, calibration: 6.2, insight: 7.1, bias: 4.0 }
+    },
+    {
+      name: "Judge — Priya Anand", judge: { judge_id: "priya-anand", judge_version: 1, kind: "judge" },
+      rep_score: 5.8, n_meta: 12,
+      components: { reasoning_quality: 6.1, calibration: 5.4, insight: 6.2, bias: 5.1 }
+    }
+  ]
+};
+/* DATA:END */
+
+const medals = ["🥇", "🥈", "🥉"];
+const pct = (v) => Math.max(0, Math.min(100, (v / 10) * 100)) + "%";
+
+function deltaBadge(s) {
+  if (s.prev_rep_score == null) return "";
+  const d = Math.round((s.rep_score - s.prev_rep_score) * 10) / 10;
+  if (d > 0) return `<span class="delta up" title="vs v${s.judge.judge_version - 1}">▲ +${d.toFixed(1)}</span>`;
+  if (d < 0) return `<span class="delta down" title="vs v${s.judge.judge_version - 1}">▼ ${d.toFixed(1)}</span>`;
+  return `<span class="delta flat">– 0.0</span>`;
+}
+
+function dim(label, value, isBias) {
+  return `<div class="dim">
+    <div class="lbl"><span>${label}${isBias ? " (penalty)" : ""}</span><span class="v">${value.toFixed(1)}</span></div>
+    <div class="track"><div class="fill ${isBias ? "bias" : "good"}" style="width:${pct(value)}"></div></div>
+  </div>`;
+}
+
+function render() {
+  document.getElementById("meta").innerHTML =
+    `Run <code>${DATA.run_id}</code>` +
+    `<span>Evaluator <code>${DATA.evaluator_version}</code></span>` +
+    `<span>${DATA.snapshots.length} judges</span>`;
+
+  const rows = [...DATA.snapshots].sort((a, b) => b.rep_score - a.rep_score);
+  document.getElementById("board").innerHTML = rows.map((s, i) => {
+    const c = s.components;
+    return `<div class="row ${i === 0 ? "top" : ""}">
+      <div class="rank">${medals[i] ? `<span class="medal">${medals[i]}</span>` : i + 1}</div>
+      <div class="who">
+        <div class="name">
+          ${s.name}
+          <span class="tag ${s.judge.kind}">${s.judge.kind}</span>
+          <span class="ver">v${s.judge.judge_version}</span>
+          ${deltaBadge(s)}
+        </div>
+        <div class="dims">
+          ${dim("Reasoning", c.reasoning_quality, false)}
+          ${dim("Calibration", c.calibration, false)}
+          ${dim("Insight", c.insight, false)}
+          ${dim("Bias", c.bias, true)}
+        </div>
+      </div>
+      <div class="score">
+        <div class="big">${s.rep_score.toFixed(1)}</div>
+        <div class="scale">/ 10 reputation</div>
+        <div class="n">${s.n_meta} critiques</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+render();
+</script>
+</body>
+</html>

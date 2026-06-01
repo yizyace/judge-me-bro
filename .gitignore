@@ -1,2 +1,14 @@
 .DS_Store
 
+# node / typescript
+node_modules/
+dist/
+*.tsbuildinfo
+
+# local data (reputation ledger, run artifacts)
+data/
+runs/
+
+# nested git worktrees (parallel agent workspaces)
+.claude/worktrees/
+
