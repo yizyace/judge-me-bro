@@ -9,3 +9,6 @@ dist/
 data/
 runs/
 
+# nested git worktrees (parallel agent workspaces)
+.claude/worktrees/
+
