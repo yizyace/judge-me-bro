@@ -9,6 +9,40 @@ Full design: [`specs/root.md`](specs/root.md). Phase 1/2 contracts:
 [`specs/evaluation.md`](specs/evaluation.md). Schemas + scoring math:
 [`specs/persona-schema.md`](specs/persona-schema.md), [`specs/reputation.md`](specs/reputation.md).
 
+## The app
+
+A Next.js web UI wraps the pipeline: pick an idea and a judge panel, hit **Start
+judging**, and watch the judges score it and meta-judge each other live before the
+reputation leaderboard lands. Submit spawns headless Claude Code running the real
+`score-idea` / `critique-evaluation` skills; the harness persists everything and the
+UI streams progress over SSE by watching `runs/<id>/`.
+
+```bash
+cd web && npm install && npm run dev   # http://localhost:3000
+```
+
+**1. Assemble the panel.** Pick a startup idea (one preselected) and 3–5 judges — the
+hackathon panel is auto-selected, swappable, with the smart-founder directory to add from.
+
+![Setup — pick an idea and a judge panel](docs/screenshots/01-setup.png)
+
+**2. Judges score, then judge each other — live.** Phase-1 reviews stream in per judge,
+while the Phase-2 judge-to-judge matrix (each judge evaluates the others, blind +
+self-excluding) fills in.
+
+![Live judging — per-judge reviews and the judge-to-judge matrix](docs/screenshots/02-live-judging.png)
+
+**3. One panel summary.** The judges' reviews fold into a single consensus verdict, mean
+per-axis scores, pooled strengths/risks, and a synthesized narrative.
+
+![Panel summary — consensus verdict, mean scores, narrative](docs/screenshots/03-panel-summary.png)
+
+**4. Reputation leaderboard.** Judges are ranked by peer-derived reputation (mean
+`meta_score`) with per-dimension bars (reasoning, calibration, insight, bias-as-penalty),
+persisted to the append-only ledger.
+
+![Reputation leaderboard — judges ranked by peer-derived reputation](docs/screenshots/04-leaderboard.png)
+
 ## Architecture
 
 Two cooperating layers — **no Agent SDK, no metered API tokens**:
