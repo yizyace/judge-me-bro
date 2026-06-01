@@ -121,6 +121,7 @@ the fixed point we iterate toward.
 judge-me-bro/
 ├── specs/
 │   ├── root.md                  ← this file
+│   ├── judging-schemas.md       ← (sub-spec) eval schemas + procedure + math
 │   ├── persona-schema.md        ← (sub-spec) frontmatter contract
 │   ├── reputation.md            ← (sub-spec) scoring math
 │   └── hosting.md               ← (sub-spec) deploy / upload API
@@ -215,6 +216,10 @@ links: [demo, repo, deck]
 
 ### 6.3 Evaluation — Phase 1 (`runs/<run-id>/evaluations/<judge>@<ver>--<idea>.json`)
 
+> Canonical contract: [`judging-schemas#IdeaEvaluation`](./judging-schemas.md#23-schema-b--ideaevaluation-persisted-record).
+> The JSON below is an illustrative sketch; `judging-schemas.md` is normative and
+> expands it (per-criterion `assessments`, nested `JudgeRef`, full provenance).
+
 ```json
 {
   "run_id": "2026-06-01T18-00Z",
@@ -232,6 +237,10 @@ links: [demo, repo, deck]
 ```
 
 ### 6.4 Meta-evaluation — Phase 2 (`runs/<run-id>/meta/<judgeA>--on--<judgeB>--<idea>.json`)
+
+> Canonical contract: [`judging-schemas#MetaEvaluation`](./judging-schemas.md#34-schema-b--metaevaluation-persisted-record).
+> The JSON below is an illustrative sketch; `judging-schemas.md` is normative and
+> expands it (nested `dimensions`, `JudgeRef` for rater/target, full provenance).
 
 ```json
 {
@@ -253,6 +262,11 @@ links: [demo, repo, deck]
 ```
 
 ### 6.5 Reputation ledger (SQLite, append-only)
+
+> The logical record written into the `reputation` table is
+> [`reputation#ReputationSnapshot`](./reputation.md#22-schema-a--reputationsnapshot-persisted-record);
+> see [`reputation.md`](./reputation.md) for how `rep_score` is computed and
+> validated. The DDL below stays canonical for storage.
 
 ```sql
 -- a judge distillation snapshot

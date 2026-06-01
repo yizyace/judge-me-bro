@@ -1,287 +1,289 @@
-# Reputation — Scoring Math & Evaluator Binding
+# Reputation Spec — Phase 3 Aggregation & Ledger
 
-> Sub-spec of [`root.md`](./root.md) (§6.5 ledger, §7 pipeline). Defines how
-> Phase-2 meta-evaluations roll up into a **versioned reputation score** per
-> judge, the **evaluator** that binds the rubric + formulas, and the iterate/demo
-> mechanic. The math here MUST match `harness/schemas.ts` and
-> [`evaluation.md`](./evaluation.md) §3.7.
+> Planning documentation for Phase 3 of *Judge Me Bro*: reducing the
+> judge-to-judge critiques from Phase 2 into a single, versioned **reputation
+> score** per judge, appended to an immutable ledger. Written so an **agent**
+> can execute it directly. No code — an implementing agent chooses the runtime.
 
 - **Status:** Draft (hackathon planning)
-- **Parent spec:** [`root.md`](./root.md) · sibling: [`evaluation.md`](./evaluation.md)
-- **Authoritative contracts:** `harness/schemas.ts` →
-  `MetaEvaluation`, `ReputationRow`, `ReputationComponents`,
-  `ReputationSnapshot`, `ReputationReport`, `DEFAULT_EVALUATOR_VERSION`.
+- **Parent spec:** [`root.md`](./root.md)
+- **Depends on:** [`judging-schemas.md`](./judging-schemas.md) — consumes
+  `judging-schemas#MetaEvaluation`
 - **Last updated:** 2026-06-01
+- **Covers:** Phase 3 — aggregate `MetaEvaluation`s into a `ReputationSnapshot`
+  per judge version, bind it to an `evaluator_version`, and append it to the
+  ledger so reputation stays comparable and trendable across versions.
 
 ---
 
-## 1. The chain: dimensions → meta_score → rep_score
+## Spec label & schema index
 
-Reputation is built in two aggregations:
+**Spec label:** `reputation`
 
-1. **Per critique** — each Phase-2 `MetaEvaluation` carries a single
-   **`meta_score`** computed from its four meta-dimensions (§2).
-2. **Per judge version** — **`rep_score`** is the **mean** of every `meta_score`
-   targeting that judge version in a run, plus the **component means** stored
-   beside it (§3).
+This doc is the **single source of truth** for the reputation record and its
+math. Cite a contract from another spec by its label, `reputation#<SchemaName>`
+(e.g. `reputation#ReputationSnapshot`). Reference by schema *name*, not §number.
 
-Both derived numbers are computed **by the harness, never by a model**
-(evaluation.md §4). Everything is **versioned and append-only** (§6).
+| Label | Kind | Defined in | Purpose |
+|-------|------|-----------|---------|
+| `reputation#ReputationSnapshot` | object | [§2.2](#22-schema-a--reputationsnapshot-persisted-record) | one judge version's reputation for one run (a ledger row) |
+| `reputation#RepComponents` | object | [§2.3](#23-schema-b--repcomponents-breakdown) | the score breakdown persisted for debugging (→ `components_json`) |
 
----
+**Reused contracts** — defined in [`judging-schemas.md`](./judging-schemas.md),
+cited here rather than redefined: `judging-schemas#MetaEvaluation`,
+`judging-schemas#JudgeRef`, `judging-schemas#EvaluatorVersion`,
+`judging-schemas#RunId`, `judging-schemas#IsoTimestamp`, `judging-schemas#Unit`.
 
-## 2. Per-critique `meta_score` (evaluator v1)
-
-For one `MetaEvaluation`, the rater scores the **target judge's judgment** on
-four orthogonal dimensions, each an integer 1–10 (evaluation.md §3.2):
-
-| Dimension | Meaning | Direction |
-|-----------|---------|-----------|
-| `reasoning_quality` | Is the rationale sound and grounded in the idea? | higher = better |
-| `calibration` | Do the numeric scores match the strength of the reasoning? | higher = better |
-| `insight` | Did they surface something non-obvious? | higher = better |
-| `bias` | Halo / vibe / pet-peeve distortion | **PENALTY**: 1 = unbiased … 10 = blatantly biased |
-
-The single-critique score (evaluation.md §3.7):
-
-```
-meta_score = clamp_[1,10]( 0.4 · reasoning_quality
-                         + 0.3 · calibration
-                         + 0.3 · insight
-                         − 0.2 · bias )
-```
-
-- Round to **2 decimals**.
-- `bias` is **subtracted** (penalty axis), so a less-biased critique target
-  scores higher.
-- The result is **clamped to `[1, 10]`** and stored on the `MetaEvaluation`
-  record (`meta_score`, number 1–10 in `schemas.ts`); on read-back it must
-  recompute to the stored value (evaluation.md §3.8).
-- This is the score of **one critique**, not a reputation. Reputation is the
-  mean of many (§3).
-
-**Self-exclusion:** a critique only counts if `rater ≠ target` (same `judge_id`
-**and** `judge_version`). `MetaEvaluation.refine` rejects any record where the
-rater equals the target version, enforced before the model call and again on the
-assembled record (evaluation.md §3.1, §3.8). The helper `sameJudgeVersion(a, b)`
-in `schemas.ts` is the source of truth for "same distillation".
+**Referencing from other specs** — cite `reputation#ReputationSnapshot` for the
+record shape, `reputation §2` for the whole aggregation step. The ledger DDL the
+record maps onto is canonical in
+[`root.md` §6.5](./root.md#65-reputation-ledger-sqlite-append-only).
 
 ---
 
-## 3. Aggregate `rep_score(judge_version)`
+## 0. How to read this doc
 
-For a given judge version in a run, collect **all** `MetaEvaluation` records in
-that run whose `target` is that exact `(judge_id, judge_version)` — and (per
-self-exclusion) never authored by that same version. Then:
+Phase 3 runs once, after Phase 2 completes. It is defined like the other steps:
 
-```
-rep_score(judge_version) = mean over those critiques of meta_score
-n_meta                   = number of those critiques
-```
+1. **Inputs** — what the agent receives.
+2. **Schema** — the shape of the persisted reputation record.
+3. **Procedure** — the ordered steps the agent runs.
+4. **Validation** — what must be true before a row is appended.
 
-- `rep_score` is a plain **arithmetic mean** of the per-critique `meta_score`s.
-  It inherits the `[1, 10]` range (each `meta_score` is already clamped to
-  `[1,10]`, so their mean is too) and matches `ReputationRow.rep_score`
-  (number, 1–10) and `ReputationSnapshot.rep_score`.
-- `n_meta` is the count of critiques feeding the mean
-  (`ReputationRow.n_meta`, non-negative integer).
+Scores stay on the **1–10** scale inherited from the meta-evaluations. All
+reputation rows are **append-only** in the ledger (`root.md` §6.5).
 
-### 3.1 Component means (stored alongside)
+---
 
-Beside `rep_score`, persist the **mean of each meta-dimension** across the same
-set of critiques:
+## 1. Shared definitions
 
-```
-components = {
-  reasoning_quality: mean(reasoning_quality over those critiques),
-  calibration:       mean(calibration       over those critiques),
-  insight:           mean(insight           over those critiques),
-  bias:              mean(bias              over those critiques),   // raw; lower is better
-}
-```
+### 1.1 What reputation is (and isn't)
 
-- This matches `ReputationComponents` in `schemas.ts` (four numbers) and is
-  serialized into the **`reputation.components_json`** ledger column
-  (root.md §6.5) — the "breakdown for debugging."
-- The **leaderboard consumes** these means: `ReputationSnapshot.components`
-  carries them into `report/leaderboard.html`.
-- `bias` is stored as the **raw mean** (penalty axis: lower = less biased). Do
-  **not** invert it in storage; the report explains the direction.
-- **Consistency check:** because `meta_score` is linear in the dimensions, when
-  no clamp bound binds, `rep_score` equals the v1 formula applied to the
-  component means:
-  `0.4·mean(reasoning) + 0.3·mean(calibration) + 0.3·mean(insight) − 0.2·mean(bias)`.
-  (Per-critique clamping can introduce a small divergence; the stored `rep_score`
-  is the mean of the clamped `meta_score`s, which is authoritative.)
+Reputation is a judge's **track record at judging** — the mean quality of their
+Phase 1 evaluations as scored by *other* judges in Phase 2. It is **not** a
+score of any idea, and **not** the judge's own confidence. For the MVP it is
+**peer-relative** (`root.md` §14): a high `rep_score` means "the panel thinks
+this judge judges well," not "agrees with ground truth."
 
-### 3.2 Aggregated view (report data)
+### 1.2 Comparability rule (read before touching the math)
 
-The reputation report bundles per-version snapshots for a run
-(`ReputationReport` → `{ run_id, evaluator_version, snapshots[] }`). Each
-`ReputationSnapshot` carries:
+A `rep_score` is only comparable to another when both were computed:
+
+- under the **same** `evaluator_version`, and
+- from meta-evaluations that themselves share that `evaluator_version`.
+
+Aggregating meta-evaluations across mixed evaluator versions is a hard error
+(§2.6). Changing the math below = a **new** `evaluator_version`, never an
+in-place edit — exactly as in `judging-schemas` §3.7. Otherwise the
+version-over-version comparison that is the whole point (`root.md` §12) becomes
+invalid.
+
+---
+
+## 2. Phase 3 — Reputation aggregation
+
+**One snapshot per judge version, per run.** For each judge version that was a
+**target** in Phase 2, gather every `MetaEvaluation` aimed at it and reduce them
+to one score. This is a single reduction over the Phase 2 matrix, not a fan-out.
+
+### 2.1 Inputs
+
+| Input | Description |
+|-------|-------------|
+| meta-evaluations | every `judging-schemas#MetaEvaluation` record for the run |
+| judge versions | the set of `(judge_id, version)` that were Phase 2 *targets* |
+| `run_id` | current run |
+| `evaluator_version` | the version bound to this scoring pass |
+| ground-truth labels | optional; known idea outcomes, if any (unused in v1) |
+
+### 2.2 Schema A — `ReputationSnapshot` (persisted record)
+
+**Label:** `reputation#ReputationSnapshot`
+
+One judge version's reputation for one run. Persisted as a row in the
+append-only `reputation` table (DDL:
+[`root.md` §6.5](./root.md#65-reputation-ledger-sqlite-append-only)); the
+field → column mapping is in [§3](#3-ledger-binding).
 
 | Field | Type | Source |
 |-------|------|--------|
-| `name` | string (≥1) | persona display `name`, else **title-cased `id`** (per persona-schema §2) |
-| `judge` | `JudgeRef` | the scored `(judge_id, judge_version, kind)` |
-| `rep_score` | number | §3 mean |
-| `prev_rep_score` | number, **optional** | previous version's rep_score, **same evaluator** (§5) |
-| `n_meta` | int ≥ 0 | §3 count |
-| `components` | `ReputationComponents` | §3.1 means |
+| `run_id` | `judging-schemas#RunId` | input |
+| `created_at` | `judging-schemas#IsoTimestamp` | now |
+| `evaluator_version` | `judging-schemas#EvaluatorVersion` | input |
+| `judge` | `judging-schemas#JudgeRef` | the judge being scored (the Phase 2 *target*) |
+| `rep_score` | number 1–10 | computed (§2.5) |
+| `n_meta` | integer ≥ 1 | count of meta-evaluations aggregated |
+| `components` | `reputation#RepComponents` | breakdown (§2.3) |
+| `ground_truth_agreement` | `judging-schemas#Unit` \| null | optional; `null` in v1 |
 
----
-
-## 4. The evaluator `eval@v1`
-
-The **evaluator** is the version-bound binding of **(rubric + the scoring
-formulas above)** — i.e. the five rubric criteria, the four meta-dimensions, the
-`meta_score` formula (§2), and the `rep_score` aggregation (§3). It is recorded
-in the `evaluator` ledger table (root.md §6.5):
-
-| Column | Meaning |
-|--------|---------|
-| `evaluator_version` | `^eval@v\d+$`, the default baseline is **`eval@v1`** (`DEFAULT_EVALUATOR_VERSION` in `schemas.ts`) |
-| `rubric_json` | the rubric + weights/formulas that define this evaluator |
-| `notes` | human description of what this evaluator computes |
-| `created_at` | ISO timestamp |
-
-Every `IdeaEvaluation`, `MetaEvaluation`, and `ReputationRow` is **tagged with
-`evaluator_version`** so all comparisons are apples-to-apples.
-
-### 4.1 Versioning rule (never edit in place)
-
-> **Any** change to the math — the `meta_score` weights, the clamp, the
-> aggregation, the dimensions, or the rubric — **forks a new `eval@vN`**
-> (e.g. `eval@v2`). The evaluator is **never edited in place**.
-
-This is the same rule stated in evaluation.md §3.7 and root.md §13/§7: editing an
-evaluator in place would silently change historical scores and make
-version-over-version reputation comparisons invalid. New math ⇒ new evaluator row
-⇒ comparisons are only ever made **within a single `evaluator_version`**.
-
-### 4.2 Optional ground-truth term (future `eval@v2`)
-
-`meta_score`/`rep_score` are **peer-relative** under `eval@v1` (root.md §13,
-evaluation.md §7). When a labeled set of **known winning ideas** exists, a future
-**`eval@v2`** may add a **ground-truth agreement term** — rewarding judges whose
-verdicts/scores agree with real outcomes — and re-weight accordingly. Per §4.1
-this is a **new evaluator version**, not an edit to `eval@v1`; runs under each
-version are compared only within that version.
-
----
-
-## 5. Iterate / demo mechanic
-
-The headline demo (root.md §11 M4, §12) is showing a judge's reputation **rise
-across versions under an unchanged evaluator**:
-
-1. Inspect a low-`rep_score` judge.
-2. Improve its distillation (better sources, sharper `rubric_weights`, more
-   worked examples) and **bump `version`** (a new persona file; old retained —
-   see persona-schema §1).
-3. **Re-run** the pipeline against the **same `evaluator_version`**.
-4. Confirm `rep_score` went **up**.
-
-To surface this, define:
-
-```
-prev_rep_score(judge@vN) = rep_score of the judge's previous version (judge@v(N-1))
-                           under the SAME evaluator_version
-```
-
-- It is the **same-evaluator** predecessor score — comparing across evaluator
-  versions is invalid (§4.1), so `prev_rep_score` is only ever drawn from rows
-  with a matching `evaluator_version`.
-- It is **optional** (`ReputationSnapshot.prev_rep_score?`): a judge's **first**
-  version under a given evaluator has no predecessor, so the field is omitted.
-- The leaderboard **`report/leaderboard.html`** renders a **delta badge**
-  (`rep_score − prev_rep_score`) so reviewers see the improvement at a glance.
-
-Because the ledger is append-only (§6), the full version history is recoverable,
-and the predecessor lookup is just "the most recent prior `(judge_id, version)`
-reputation row under this `evaluator_version`."
-
----
-
-## 6. Ledger binding & append-only invariant
-
-Reputation persists into the SQLite **reputation ledger** (root.md §6.5; mirrored
-by `ReputationRow` in `schemas.ts`):
-
-| Column | Maps to |
-|--------|---------|
-| `judge_id`, `judge_version` | the scored judge version (FK → `judge_version`) |
-| `evaluator_version` | the binding evaluator (FK → `evaluator`); the comparison key |
-| `run_id` | the pipeline pass |
-| `rep_score` | §3 mean of `meta_score` |
-| `n_meta` | §3 count of critiques |
-| `components_json` | §3.1 `ReputationComponents`, serialized |
-| `created_at` | ISO timestamp |
-
-**The ledger is append-only.** A new run **never mutates** old rows — it inserts
-one new `reputation` row per `(judge_version, run)`. This is what makes a judge's
-reputation plottable over versions and lets the demo *prove* the panel improved
-(root.md §6.5, §14). No update or delete on historical rows, ever.
-
----
-
-## 7. Worked examples
-
-### 7.1 Single `meta_score` (evaluation.md §6)
-
-`jessica-livingston@2` critiques `paul-graham@3`'s evaluation of `idea-014`,
-returning dimensions `{ reasoning_quality: 8, calibration: 6, insight: 9,
-bias: 3 }`:
-
-```
-meta_score = clamp_[1,10]( 0.4·8 + 0.3·6 + 0.3·9 − 0.2·3 )
-           = clamp_[1,10]( 3.2 + 1.8 + 2.7 − 0.6 )
-           = clamp_[1,10]( 7.1 )
-           = 7.1
-```
-
-### 7.2 Aggregate `rep_score` (mean of a few critiques)
-
-Suppose three critiques (from three different rater versions, none being
-`paul-graham@3`) `target` `paul-graham@3` in one run:
-
-| Critique | reasoning | calibration | insight | bias | `meta_score` |
-|----------|-----------|-------------|---------|------|--------------|
-| A | 8 | 6 | 9 | 3 | `3.2+1.8+2.7−0.6` = **7.1** |
-| B | 7 | 7 | 6 | 4 | `2.8+2.1+1.8−0.8` = **5.9** |
-| C | 9 | 8 | 8 | 2 | `3.6+2.4+2.4−0.4` = **8.0** |
-
-```
-rep_score(paul-graham@3) = mean(7.1, 5.9, 8.0) = 21.0 / 3 = 7.00
-n_meta = 3
-components = {
-  reasoning_quality: mean(8,7,9) = 8.00,
-  calibration:       mean(6,7,8) = 7.00,
-  insight:           mean(9,6,8) = 7.67,
-  bias:              mean(3,4,2) = 3.00,
+```json
+{
+  "run_id": "2026-06-01T18-00Z",
+  "created_at": "2026-06-01T18-42-00Z",
+  "evaluator_version": "eval@v1",
+  "judge": { "judge_id": "paul-graham", "judge_version": 3, "kind": "founder" },
+  "rep_score": 7.1,
+  "n_meta": 4,
+  "components": {
+    "mean_meta_score": 7.1,
+    "mean_dimensions": { "reasoning_quality": 8.0, "calibration": 7.0, "insight": 8.0, "bias": 3.0 },
+    "n_meta": 4,
+    "ground_truth_term": null
+  },
+  "ground_truth_agreement": null
 }
 ```
 
-Cross-check (§3.1): `0.4·8.00 + 0.3·7.00 + 0.3·7.67 − 0.2·3.00 = 3.2 + 2.1 +
-2.30 − 0.6 = 7.00` — matches the mean of the per-critique scores (no clamp bound
-here).
+### 2.3 Schema B — `RepComponents` (breakdown)
 
-If `paul-graham@2` had `rep_score = 6.40` under the **same** `eval@v1`, the
-leaderboard shows `prev_rep_score = 6.40` and a delta badge of **+0.60** —
-the M4 demo: the distillation measurably improved.
+**Label:** `reputation#RepComponents`
+
+Stored so a reputation can be explained and debugged without re-running. Maps to
+the `components_json` column.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `mean_meta_score` | number 1–10 | mean of `meta_score` over the aggregated critiques |
+| `mean_dimensions` | map dim → number | per-dimension means (`reasoning_quality`, `calibration`, `insight`, `bias`) for transparency |
+| `n_meta` | integer ≥ 1 | sample size (mirrors the row's `n_meta`) |
+| `ground_truth_term` | number \| null | contribution of the optional truth term; `null` when no labels |
+
+> `mean_dimensions` is **diagnostic only** — it is *not* re-weighted into
+> `rep_score` (that would double-count the weights already baked into
+> `meta_score`). It exists to answer "*why* is this judge's reputation low?"
+
+### 2.4 Procedure
+
+1. **Group** every `MetaEvaluation` in the run by its `target` `JudgeRef`.
+2. **Guard:** all grouped records must share the run's `evaluator_version`
+   (else hard error, §2.6). Self-critiques are excluded upstream
+   (`judging-schemas` §3.8); assert `rater != target` on each, regardless.
+3. **Skip empties:** a judge version that received **zero** critiques gets **no**
+   snapshot (fail-closed — it simply has no reputation this run).
+4. **Compute** `rep_score` and `RepComponents` (§2.5).
+5. **Assemble** the `ReputationSnapshot` and validate it (§2.6).
+6. **Append** one row to the `reputation` ledger (§3); regenerate `report.md`.
+
+### 2.5 Reputation math (evaluator v1)
+
+```
+M         = { meta-evaluations whose target == this judge version, this run }
+n_meta    = |M|                              # require n_meta ≥ 1
+base      = mean_{m ∈ M} ( m.meta_score )    # meta_score per judging-schemas §3.7
+rep_score = round2( clamp_[1,10]( base ) )   # + w_gt · ground_truth_agreement when labels exist; w_gt = 0 in v1
+```
+
+`meta_score` is already `0.4·reasoning_quality + 0.3·calibration + 0.3·insight −
+0.2·bias`, clamped to [1, 10] **per critique** (`judging-schemas` §3.7). So
+`rep_score` is just their **mean**: Phase 3 consumes the persisted derived field
+and never recomputes from raw dimensions, which keeps the layers clean. Because
+every `meta_score ∈ [1, 10]`, the mean is too — the `clamp` is a guard that only
+bites once a ground-truth term is added.
+
+> **Reconciliation with `root.md` §7.** root.md writes the v1 baseline as the
+> mean of `(0.4·reasoning + 0.3·calibration + 0.3·insight) − 0.2·bias`. By
+> linearity that equals the mean of `meta_score`, except root.md clamps once at
+> the end while this spec relies on the per-critique clamp already applied in
+> Phase 2. They differ only when a critique's raw score falls outside [1, 10] —
+> which the Phase 2 schema forbids — so on valid data they are identical. This
+> spec is canonical; `root.md` §7 is the summary.
+
+### 2.6 Validation rules (Phase 3)
+
+- `n_meta ≥ 1` (no snapshot for an un-critiqued judge).
+- Every aggregated `MetaEvaluation` shares the snapshot's `evaluator_version`.
+- `rater != target` held for every aggregated record (self-exclusion).
+- `rep_score` and every `RepComponents` field recompute to the stored values.
+- **Idempotency:** at most one row per `(judge_id, judge_version,
+  evaluator_version, run_id)`. Re-running a completed run must not append a
+  duplicate — compute once; the ledger never mutates prior rows (`root.md` §6.5).
 
 ---
 
-## 8. Cross-references & consistency
+## 3. Ledger binding
 
-- **`meta_score` math & dimensions:** evaluation.md §3.7, §3.2; `MetaEvaluation`
-  in `schemas.ts`.
-- **Self-exclusion:** evaluation.md §3.1/§3.8; `sameJudgeVersion` +
-  `MetaEvaluation.refine` in `schemas.ts`.
-- **Ledger:** root.md §6.5; `ReputationRow` / `EvaluatorRow` / `JudgeVersionRow`.
-- **Report data:** `ReputationComponents`, `ReputationSnapshot`,
-  `ReputationReport` in `schemas.ts`; consumed by `report/leaderboard.html`.
-- **Persona `name` fallback:** [`persona-schema.md`](./persona-schema.md) §2.
+`ReputationSnapshot` maps onto the append-only `reputation` table whose DDL is
+canonical in
+[`root.md` §6.5](./root.md#65-reputation-ledger-sqlite-append-only):
 
-> If this doc and `schemas.ts`/`evaluation.md` ever disagree, treat
-> `schemas.ts` + `evaluation.md` as authoritative and fix this doc.
+| `ReputationSnapshot` field | `reputation` column |
+|----------------------------|---------------------|
+| `judge.judge_id` | `judge_id` |
+| `judge.judge_version` | `judge_version` |
+| `evaluator_version` | `evaluator_version` |
+| `run_id` | `run_id` |
+| `rep_score` | `rep_score` |
+| `n_meta` | `n_meta` |
+| `components` (JSON-encoded) | `components_json` |
+| `created_at` | `created_at` |
+
+`judge.kind` and `ground_truth_agreement` are not first-class columns in the v1
+ledger: `kind` lives on the `judge_version` row this FK references; the
+ground-truth term, when present, rides inside `components_json`. Promoting either
+to its own column is a ledger migration, not a scoring change (so it does **not**
+force a new `evaluator_version`).
+
+---
+
+## 4. Robustness rules
+
+- **Fail closed:** a judge with zero valid critiques gets no row, not a zero. A
+  run can finish with some judges un-scored; the ledger stays clean.
+- **Determinism:** `rep_score` and `RepComponents` are always computed by the
+  harness from the persisted `MetaEvaluation`s, never supplied by a model.
+- **Append-only provenance:** every row carries `run_id`, `created_at`,
+  `evaluator_version`, and the judge `JudgeRef`, so any reputation is
+  reproducible and locatable in time.
+- **No mixed evaluators:** aggregation refuses meta-evaluations whose
+  `evaluator_version` differs from the run's.
+
+---
+
+## 5. Agent & skill mapping
+
+(see `root.md` §8–9 for the full roster)
+
+| Step | Subagent | Skill (how-to) | Reads | Writes |
+|------|----------|----------------|-------|--------|
+| Phase 3 | `reputation-keeper` | `update-reputation` | all `runs/<id>/meta/*` | `data/jmb.sqlite` (reputation rows), `runs/<id>/report.md` |
+
+Phase 3 is one reduction, not a fan-out: a single `reputation-keeper` pass reads
+the whole Phase 2 matrix and appends one row per critiqued judge version.
+
+---
+
+## 6. Worked end-to-end example
+
+Continuing the `judging-schemas` §6 example:
+
+1. **Phase 2** produced 4 critiques targeting `paul-graham@3` (from 4 other
+   judges), with `meta_score`s `{7.1, 6.8, 7.6, 6.9}`.
+2. **`reputation-keeper`** groups them by target, confirms all are `eval@v1` and
+   none are self-critiques, then computes
+   `rep_score = round2( mean(7.1, 6.8, 7.6, 6.9) ) = round2(7.10) = 7.1`,
+   `n_meta = 4`, and the diagnostic `mean_dimensions`.
+3. It appends one `reputation` row — `(paul-graham, 3, eval@v1,
+   2026-06-01T18-00Z, 7.1, 4, {…}, …)` — and regenerates the leaderboard in
+   `report.md`.
+4. **Iteration (`root.md` §12 demo):** improve `paul-graham`'s distillation, bump
+   to `@4`, re-run under the *same* `eval@v1`. A new append-only row lets us show
+   `rep_score` moved — proof the panel measurably got better.
+
+---
+
+## 7. Open questions
+
+- **Low-`n` noise / shrinkage:** with few critiques, `rep_score` is jumpy.
+  Consider Bayesian shrinkage toward the panel mean (weighted by `n_meta`). That
+  changes the math, so it would mint a new `evaluator_version`. Out of scope for
+  v1.
+- **Per-rater normalization:** `rep_score` lives on the absolute 1–10 meta scale
+  but is read peer-relatively. If raters differ systematically in harshness,
+  z-scoring per rater before the mean would be fairer — new `evaluator_version`
+  if adopted.
+- **Ground-truth term:** the hook (`ground_truth_agreement`, `w_gt`) is reserved
+  but unused (`w_gt = 0`). When a labeled set of known outcomes exists, define
+  the agreement metric and bump the evaluator (`root.md` §13).
+- **Cross-run aggregation:** v1 scores per run. Whether a judge's *headline*
+  reputation is the latest run or a decayed average across runs is a reporting
+  decision for `report.md` / hosting — not the per-run row, which stays atomic.
